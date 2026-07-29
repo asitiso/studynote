@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>모든암기장</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#3C3489">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="모든암기장">
+<meta name="mobile-web-app-capable" content="yes">
 <style>
   :root{
     --bg:#FAF9F6;
@@ -194,8 +203,12 @@
     </div>
     <div class="topbar" style="padding-left:0;padding-right:0;">
       <span class="title" id="deck-title"></span>
-      <button class="icon-btn" onclick="openDeleteDeck()">🗑</button>
+      <div style="display:flex;gap:4px;">
+        <button class="icon-btn" onclick="renameDeck()">✎</button>
+        <button class="icon-btn" onclick="openDeleteDeck()">🗑</button>
+      </div>
     </div>
+    <div id="deck-session-info"></div>
     <div id="word-list"></div>
     <div class="fab-spacer"></div>
   </div>
@@ -237,6 +250,7 @@
       <input class="spell-input" id="spell-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="정답 입력">
       <div class="spell-answer" id="spell-answer"></div>
       <button class="spell-submit" id="spell-submit" onclick="submitSpell()">확인</button>
+      <button id="spell-idk" onclick="giveUpSpell()" style="width:100%;height:48px;margin-top:10px;border-radius:14px;font-size:15px;font-weight:600;color:var(--sub);background:transparent;border:1.5px solid var(--line);">잘 모르겠어요</button>
     </div>
   </div>
 
@@ -270,9 +284,13 @@
     <div id="add-photo" >
       <div class="camera-zone" id="camera-zone">
         <div class="cam-icon">📷</div>
-        <div class="cam-text">숙제나 교재를 촬영하면<br>AI가 자동으로 단어를 인식해요</div>
-        <button class="cam-btn" onclick="document.getElementById('photo-input').click()">사진 선택</button>
-        <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
+        <div class="cam-text">숙제나 교재를 촬영하면<br>AI가 자동으로 단어를 인식해요<br>여러 페이지는 "여러 장 선택"을 이용하세요</div>
+        <div style="display:flex;gap:10px;">
+          <button class="cam-btn" onclick="document.getElementById('photo-input-camera').click()">사진 촬영</button>
+          <button class="cam-btn" style="background:var(--card);color:var(--accent);border:1.5px solid var(--accent);" onclick="document.getElementById('photo-input-gallery').click()">여러 장 선택</button>
+        </div>
+        <input type="file" id="photo-input-camera" accept="image/*" capture="environment" class="hidden">
+        <input type="file" id="photo-input-gallery" accept="image/*" multiple class="hidden">
       </div>
     </div>
 
@@ -333,11 +351,885 @@ const firebaseConfig = {
   appId: "1:582095937004:web:d1547c1e4d022e654074c9",
   measurementId: "G-WGH0FE0C5Q"
 };
+window.addEventListener('error', (ev)=>{
+  const el = document.getElementById('deck-list');
+  if(el && !el.innerHTML){
+    el.innerHTML = '<div class="empty-state"><div class="big">⚠️</div><div class="msg">오류: '+ (ev.message||'') +'</div></div>';
+  }
+});
+
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 
-window.__fb = { db, collection, doc, setDoc, getDocs, addDoc, deleteDoc, updateDoc, query, orderBy, writeBatch, serverTimestamp, onSnapshot };
+// ================== 전역 상태 ==================
+let GEMINI_KEY = "AQ.Ab8RN6KlWRLYofYcVTz6mqlpboolxYOkk4yZopEJZLZNoVlZpw";
+const GEMINI_MODELS = [
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-3.5-flash'
+];
+let geminiIdx = 0;
+
+let decks = [];              // 암기장 목록
+let currentDeckId = null;    // 현재 열람 중인 암기장
+let currentWords = [];       // 현재 암기장의 단어들
+let pendingPreview = [];     // 추가 대기 중인 단어 미리보기
+let addTargetDeckId = null;  // 단어를 추가할 대상 암기장
+
+// 학습 세션 상태
+let studyQueue = [];   // 오늘 학습할 카드 목록
+let studyIdx = 0;
+let studyStage = 'flip'; // flip -> quiz -> spell
+let studyStats = { total: 0, correct: 0 };
+let currentCard = null;
+let wrongCardsCollected = []; // 이번 세션에서 틀린 카드 모음 (오답 복습 라운드용)
+let isReviewRound = false;    // 지금이 오답 복습 라운드인지
+
+const DAILY_LIMIT = 20; // 하루 학습 개수 캡
+
+// ================== 유틸 ==================
+function $(id){ return document.getElementById(id); }
+function show(id){ $(id).classList.remove('hidden'); }
+function hide(id){ $(id).classList.add('hidden'); }
+function showScreen(id){
+  ['screen-home','screen-deck','screen-study','screen-done','screen-add','screen-newdeck'].forEach(s=>{
+    if(s===id) $(s).classList.remove('hidden'); else $(s).classList.add('hidden');
+  });
+  removeAllFabs();
+}
+function removeAllFabs(){
+  document.querySelectorAll('.fab').forEach(el=>el.remove());
+}
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+function loading(on, text){
+  if(on){ $('loading-text').textContent = text||'처리 중...'; show('loading-overlay'); }
+  else hide('loading-overlay');
+}
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+
+// ================== Firestore 경로 ==================
+// vocab/{deckId}  (deck meta)
+// vocab/{deckId}/words/{wordId}
+
+function decksCol(){ return collection(db, 'vocab'); }
+function wordsCol(deckId){ return collection(db, 'vocab', deckId, 'words'); }
+
+// ================== 암기장 목록 ==================
+async function loadDecks(){
+  loading(true, '불러오는 중...');
+  try{
+    await loadStarterDecks(); // 기본 자료 JSON은 Firestore 로딩과 별개로 항상 시도
+    const snap = await getDocs(decksCol());
+    decks = [];
+    snap.forEach(d=>decks.push({ id:d.id, ...d.data() }));
+    // 단어 개수 세기
+    for(const dk of decks){
+      const wsnap = await getDocs(wordsCol(dk.id));
+      dk.wordCount = wsnap.size;
+      let due = 0;
+      const now = Date.now();
+      wsnap.forEach(w=>{
+        const data = w.data();
+        if(!data.nextReview || data.nextReview <= now) due++;
+      });
+      dk.dueCount = due;
+    }
+    renderDeckList();
+  }catch(e){
+    console.error(e);
+    decks = [];
+    renderDeckList();
+    showLoadError(e);
+  }
+  loading(false);
+}
+
+function showLoadError(e){
+  const wrap = $('deck-list');
+  const msg = (e && e.message) ? e.message : '알 수 없는 오류';
+  wrap.innerHTML = `<div class="empty-state">
+    <div class="big">⚠️</div>
+    <div class="msg">데이터를 불러오지 못했어요.<br><br>
+    <span style="font-size:12px;color:var(--bad);word-break:break-all;">${escapeHtml(msg)}</span><br><br>
+    Firebase 콘솔 → Firestore → 규칙에서<br><b>vocab</b> 컬렉션 읽기/쓰기 허용을 확인해주세요.</div>
+  </div>`;
+  renderHomeFab();
+}
+
+
+// ================== 기본 제공 자료 (외부 JSON에서 로드) ==================
+let STARTER_DECKS = null;   // null = 아직 로드 전, [] = 로드했지만 없음
+let starterLoadFailed = false;
+
+async function loadStarterDecks(){
+  if(STARTER_DECKS !== null || starterLoadFailed) return;
+  try{
+    const res = await fetch('starter-decks.json', { cache: 'no-cache' });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    STARTER_DECKS = await res.json();
+  }catch(e){
+    console.warn('기본 자료 로드 실패', e);
+    starterLoadFailed = true;
+    STARTER_DECKS = [];
+  }
+}
+
+window.addStarterDeck = async function(idx){
+  const st = STARTER_DECKS[idx];
+  if(!st) return;
+  if(!confirm(`"${st.name}" (${st.words.length}개 카드)를 추가할까요?`)) return;
+  loading(true, '기본 자료 추가 중...');
+  try{
+    const dref = doc(decksCol());
+    await setDoc(dref, { name: st.name, createdAt: Date.now() });
+    const batch = writeBatch(db);
+    for(const [term, meaning] of st.words){
+      const wref = doc(wordsCol(dref.id));
+      batch.set(wref, { term, meaning, createdAt: Date.now(), interval:0, ease:2.3, nextReview:0, wrongStreak:0 });
+    }
+    await batch.commit();
+    loading(false);
+    toast('추가 완료');
+    goHome();
+  }catch(e){ console.error(e); loading(false); toast('추가 실패'); }
+};
+
+function renderStarterSection(){
+  if(starterLoadFailed){
+    return `<div style="margin-top:22px;">
+      <div class="empty-state" style="padding:24px 20px;">
+        <div class="msg" style="font-size:13px;">기본 제공 자료를 불러오지 못했어요.<br>
+        starter-decks.json 파일이 index.html과 같은 폴더에 있는지,<br>웹서버(또는 GitHub Pages)로 열었는지 확인해주세요.</div>
+      </div>
+    </div>`;
+  }
+  if(!STARTER_DECKS || STARTER_DECKS.length===0) return '';
+  // 이미 같은 이름의 덱이 있으면 그 항목은 숨김
+  const existing = new Set(decks.map(d=>d.name));
+  const remain = STARTER_DECKS.map((s,i)=>({...s, idx:i})).filter(s=>!existing.has(s.name));
+  if(remain.length===0) return '';
+  return `<div style="margin-top:22px;">
+    <div style="font-size:13px;font-weight:700;color:var(--sub);margin-bottom:10px;">기본 제공 자료</div>
+    ${remain.map(s=>`
+      <div class="deck-card" style="margin-bottom:10px;background:var(--accent-soft);border-color:transparent;" onclick="addStarterDeck(${s.idx})">
+        <div class="left">
+          <div class="deck-name" style="color:var(--accent);">${escapeHtml(s.name)}</div>
+          <div class="deck-meta">${s.words.length}개 카드 · 탭해서 추가</div>
+        </div>
+        <div class="deck-badge">+</div>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
+function renderDeckList(){
+  const wrap = $('deck-list');
+  if(decks.length===0){
+    wrap.innerHTML = `<div class="empty-state">
+      <div class="big">📚</div>
+      <div class="msg">아직 암기장이 없어요.<br>아래 버튼으로 첫 암기장을 만들거나,<br>기본 자료로 시작해보세요.</div>
+    </div>` + renderStarterSection();
+  } else {
+    wrap.innerHTML = decks.map(dk=>`
+      <div class="deck-card" onclick="openDeck('${dk.id}')">
+        <div class="left">
+          <div class="deck-name">${escapeHtml(dk.name||'이름없음')}</div>
+          <div class="deck-meta">전체 ${dk.wordCount||0}개</div>
+        </div>
+        <div class="deck-badge">${dk.dueCount||0}</div>
+      </div>
+    `).join('') + renderStarterSection();
+  }
+  renderHomeFab();
+}
+
+function renderHomeFab(){
+  if($('screen-home').classList.contains('hidden')) return;
+  let fab = document.getElementById('home-fab');
+  if(fab) fab.remove();
+  fab = document.createElement('div');
+  fab.className = 'fab';
+  fab.id = 'home-fab';
+  fab.innerHTML = `<button class="secondary" onclick="goNewDeck()">+ 암기장 만들기</button>`;
+  document.getElementById('app').appendChild(fab);
+}
+
+window.goHome = function(){
+  showScreen('screen-home');
+  loadDecks();
+};
+
+window.goNewDeck = function(){
+  $('new-deck-name').value = '';
+  showScreen('screen-newdeck');
+};
+
+window.createDeck = async function(){
+  const name = $('new-deck-name').value.trim();
+  if(!name){ toast('암기장 이름을 입력하세요'); return; }
+  loading(true, '만드는 중...');
+  try{
+    const ref = doc(decksCol());
+    await setDoc(ref, { name, createdAt: Date.now() });
+    loading(false);
+    goHome();
+  }catch(e){
+    console.error(e); loading(false); toast('생성 실패');
+  }
+};
+
+// ================== 암기장 상세 ==================
+window.openDeck = async function(deckId){
+  currentDeckId = deckId;
+  const dk = decks.find(d=>d.id===deckId);
+  $('deck-title').textContent = dk ? dk.name : '';
+  showScreen('screen-deck');
+  loading(true, '단어 불러오는 중...');
+  try{
+    const snap = await getDocs(query(wordsCol(deckId), orderBy('createdAt','desc')));
+    currentWords = [];
+    snap.forEach(w=>currentWords.push({ id:w.id, ...w.data() }));
+    renderWordList();
+  }catch(e){ console.error(e); toast('불러오기 실패'); }
+  loading(false);
+  renderDeckSessionInfo();
+  renderDeckFab();
+};
+
+function getResumableSession(deckId){
+  const dk = decks.find(d=>d.id===deckId);
+  const s = dk && dk.session;
+  if(s && Array.isArray(s.queueIds) && s.idx < s.queueIds.length) return s;
+  return null;
+}
+
+function renderDeckSessionInfo(){
+  const el = $('deck-session-info');
+  const session = getResumableSession(currentDeckId);
+  if(!session){ el.innerHTML = ''; return; }
+  el.innerHTML = `<div style="font-size:13px;color:var(--sub);margin-bottom:12px;">
+    저번에 ${session.idx}/${session.queueIds.length}개까지 학습했어요.
+  </div>`;
+}
+
+function renderWordList(){
+  const wrap = $('word-list');
+  if(currentWords.length===0){
+    wrap.innerHTML = `<div class="empty-state">
+      <div class="big">✏️</div>
+      <div class="msg">단어를 추가해보세요.</div>
+    </div>`;
+    return;
+  }
+  wrap.innerHTML = currentWords.map(w=>`
+    <div class="word-row">
+      <div>
+        <div class="wt">${escapeHtml(w.term)}</div>
+        <div class="wm">${escapeHtml(w.meaning)}</div>
+      </div>
+      <div style="display:flex;gap:2px;flex-shrink:0;">
+        <button class="icon-btn" onclick="editWord('${w.id}')" style="color:var(--sub);">✎</button>
+        <button class="icon-btn" onclick="deleteWord('${w.id}')" style="color:var(--bad);">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+window.editWord = async function(wordId){
+  const w = currentWords.find(x=>x.id===wordId);
+  if(!w) return;
+  const newTerm = prompt('단어', w.term);
+  if(newTerm===null) return;
+  const newMeaning = prompt('뜻', w.meaning);
+  if(newMeaning===null) return;
+  const term = newTerm.trim();
+  const meaning = newMeaning.trim();
+  if(!term || !meaning){ toast('단어와 뜻을 모두 입력하세요'); return; }
+  try{
+    await updateDoc(doc(wordsCol(currentDeckId), wordId), { term, meaning });
+    w.term = term;
+    w.meaning = meaning;
+    renderWordList();
+    toast('수정했어요');
+  }catch(e){ console.error(e); toast('수정 실패'); }
+};
+
+window.deleteWord = async function(wordId){
+  try{
+    await deleteDoc(doc(wordsCol(currentDeckId), wordId));
+    currentWords = currentWords.filter(w=>w.id!==wordId);
+    renderWordList();
+    toast('삭제됐어요');
+  }catch(e){ console.error(e); toast('삭제 실패'); }
+};
+
+window.renameDeck = async function(){
+  const dk = decks.find(d=>d.id===currentDeckId);
+  if(!dk) return;
+  const newName = prompt('암기장 이름', dk.name);
+  if(newName===null) return;
+  const name = newName.trim();
+  if(!name){ toast('이름을 입력하세요'); return; }
+  try{
+    await updateDoc(doc(decksCol(), currentDeckId), { name });
+    dk.name = name;
+    $('deck-title').textContent = name;
+    toast('이름을 바꿨어요');
+  }catch(e){ console.error(e); toast('수정 실패'); }
+};
+
+window.openDeleteDeck = async function(){
+  if(!confirm('이 암기장을 통째로 삭제할까요? 안의 단어도 모두 삭제됩니다.')) return;
+  loading(true, '삭제하는 중...');
+  try{
+    const snap = await getDocs(wordsCol(currentDeckId));
+    const batch = writeBatch(db);
+    snap.forEach(w=>batch.delete(w.ref));
+    await batch.commit();
+    await deleteDoc(doc(decksCol(), currentDeckId));
+    loading(false);
+    goHome();
+  }catch(e){ console.error(e); loading(false); toast('삭제 실패'); }
+};
+
+function renderDeckFab(){
+  if($('screen-deck').classList.contains('hidden')) return;
+  let fab = document.getElementById('deck-fab');
+  if(fab) fab.remove();
+  fab = document.createElement('div');
+  fab.className = 'fab';
+  fab.id = 'deck-fab';
+  const hasWords = currentWords.length > 0;
+  fab.innerHTML = `
+    <button class="secondary" onclick="goAddWords('${currentDeckId}')">+ 단어 추가</button>
+    ${hasWords ? `<button class="primary" onclick="startStudy('${currentDeckId}')">학습 시작</button>` : ''}
+  `;
+  document.getElementById('app').appendChild(fab);
+}
+
+// ================== 단어 추가 ==================
+window.goAddWords = function(deckId){
+  addTargetDeckId = deckId;
+  pendingPreview = [];
+  $('add-title').textContent = '단어 추가';
+  switchAddTab('photo');
+  hide('preview-wrap');
+  $('text-input').value = '';
+  $('photo-input-camera').value = '';
+  $('photo-input-gallery').value = '';
+  showScreen('screen-add');
+};
+
+window.goBackFromAdd = function(){
+  if(currentDeckId) openDeck(currentDeckId); else goHome();
+};
+
+window.switchAddTab = function(tab){
+  $('tab-photo').classList.toggle('active', tab==='photo');
+  $('tab-text').classList.toggle('active', tab==='text');
+  $('add-photo').classList.toggle('hidden', tab!=='photo');
+  $('add-text').classList.toggle('hidden', tab!=='text');
+};
+
+function handlePhotoInputChange(e){
+  const files = Array.from(e.target.files || []);
+  if(files.length===0) return;
+  extractFromImages(files);
+  e.target.value = ''; // 같은 파일을 다시 선택해도 change 이벤트가 발생하도록 초기화
+}
+$('photo-input-camera').addEventListener('change', handlePhotoInputChange);
+$('photo-input-gallery').addEventListener('change', handlePhotoInputChange);
+
+function fileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = ()=>resolve(r.result.split(',')[1]);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+async function extractFromImages(files){
+  loading(true, files.length>1 ? `AI가 사진 ${files.length}장을 인식하는 중...` : 'AI가 단어를 인식하는 중...');
+  const prompt = `이 이미지는 학생의 영어 단어 숙제 또는 학습 자료입니다. 이미지가 여러 장 주어질 수 있으며, 모든 이미지를 함께 확인해 "단어(또는 개념)"와 "뜻(또는 설명)" 쌍을 전부 찾아 하나의 JSON 배열로만 반환하세요.
+다른 설명, 마크다운, 코드블록 표시 없이 순수 JSON 배열만 출력하세요.
+형식 예시: [{"term":"achieve","meaning":"이루다, 성취하다"},{"term":"consider","meaning":"고려하다"}]
+읽기 어려운 글자는 문맥상 가장 자연스러운 단어로 추정해서 채우세요.`;
+
+  try{
+    const parts = [{ text: prompt }];
+    for(const file of files){
+      const base64 = await fileToBase64(file);
+      parts.push({ inline_data: { mime_type: file.type || 'image/jpeg', data: base64 } });
+    }
+    const result = await callGemini(parts);
+    const items = parseJsonArray(result);
+    if(!items || items.length===0){
+      loading(false);
+      toast('단어를 찾지 못했어요. 다시 촬영해보세요.');
+      return;
+    }
+    const newItems = items.map(it=>({ id: uid(), term: (it.term||'').trim(), meaning: (it.meaning||'').trim() }))
+      .filter(it=>it.term && it.meaning);
+    pendingPreview = pendingPreview.concat(newItems); // 기존 미리보기 목록에 이어붙임 (덮어쓰지 않음)
+    loading(false);
+    renderPreview();
+    toast(`${newItems.length}개 인식됨 (전체 ${pendingPreview.length}개)`);
+  }catch(e){
+    console.error(e);
+    loading(false);
+    toast('인식 실패. 다시 시도해주세요.');
+  }
+}
+
+window.parseTextInput = function(){
+  const raw = $('text-input').value.trim();
+  if(!raw){ toast('내용을 입력하세요'); return; }
+  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  const items = [];
+  for(const line of lines){
+    let term, meaning;
+    if(line.includes(',')){
+      const idx = line.indexOf(',');
+      term = line.slice(0,idx).trim();
+      meaning = line.slice(idx+1).trim();
+    } else {
+      const idx = line.indexOf(' ');
+      if(idx===-1) continue;
+      term = line.slice(0,idx).trim();
+      meaning = line.slice(idx+1).trim();
+    }
+    if(term && meaning) items.push({ id: uid(), term, meaning });
+  }
+  if(items.length===0){ toast('형식을 확인해주세요 (단어, 뜻)'); return; }
+  pendingPreview = pendingPreview.concat(items); // 기존 미리보기 목록에 이어붙임 (덮어쓰지 않음)
+  $('text-input').value = '';
+  renderPreview();
+  toast(`${items.length}개 추출됨 (전체 ${pendingPreview.length}개)`);
+};
+
+function renderPreview(){
+  show('preview-wrap');
+  const wrap = $('preview-list');
+  wrap.innerHTML = pendingPreview.map(it=>`
+    <div class="preview-item" data-id="${it.id}">
+      <input class="term-input" value="${escapeHtmlAttr(it.term)}" onchange="updatePreview('${it.id}','term',this.value)">
+      <input class="meaning-input" value="${escapeHtmlAttr(it.meaning)}" onchange="updatePreview('${it.id}','meaning',this.value)">
+      <button class="preview-del" onclick="removePreview('${it.id}')">✕</button>
+    </div>
+  `).join('');
+}
+
+window.updatePreview = function(id, field, value){
+  const it = pendingPreview.find(p=>p.id===id);
+  if(it) it[field] = value;
+};
+
+window.removePreview = function(id){
+  pendingPreview = pendingPreview.filter(p=>p.id!==id);
+  if(pendingPreview.length===0) hide('preview-wrap');
+  else renderPreview();
+};
+
+window.saveWords = async function(){
+  const valid = pendingPreview.filter(p=>p.term.trim() && p.meaning.trim());
+  if(valid.length===0){ toast('저장할 단어가 없어요'); return; }
+
+  // 이미 암기장에 있는 단어, 그리고 이번 배치 안의 중복은 자동으로 제외
+  const existingTerms = new Set(currentWords.map(w=>w.term.trim().toLowerCase()));
+  const seenInBatch = new Set();
+  const toSave = [];
+  let dupCount = 0;
+  for(const it of valid){
+    const key = it.term.trim().toLowerCase();
+    if(existingTerms.has(key) || seenInBatch.has(key)){
+      dupCount++;
+      continue;
+    }
+    seenInBatch.add(key);
+    toSave.push(it);
+  }
+  if(toSave.length===0){
+    toast('전부 이미 있는 단어예요');
+    return;
+  }
+
+  loading(true, '저장하는 중...');
+  try{
+    const batch = writeBatch(db);
+    for(const it of toSave){
+      const ref = doc(wordsCol(addTargetDeckId));
+      batch.set(ref, {
+        term: it.term.trim(),
+        meaning: it.meaning.trim(),
+        createdAt: Date.now(),
+        interval: 0,
+        ease: 2.3,
+        nextReview: 0,
+        wrongStreak: 0
+      });
+    }
+    await batch.commit();
+    loading(false);
+    toast(dupCount>0 ? `${toSave.length}개 저장 완료 (중복 ${dupCount}개 제외)` : `${toSave.length}개 저장 완료`);
+    pendingPreview = [];
+    openDeck(addTargetDeckId);
+  }catch(e){
+    console.error(e); loading(false); toast('저장 실패');
+  }
+};
+
+// ================== 간격반복(SM-2 간소화) ==================
+// wrongStreak 기반 + 간단 간격: 0 -> 1일 -> 3일 -> 7일 -> 16일 -> 35일 ...
+const INTERVALS = [0, 1, 3, 7, 16, 35, 60]; // days
+
+function nextIntervalDays(currentIdx, correct){
+  if(correct){
+    const idx = Math.min(currentIdx+1, INTERVALS.length-1);
+    return { idx, days: INTERVALS[idx] };
+  } else {
+    return { idx: 0, days: INTERVALS[0] };
+  }
+}
+
+// ================== 학습 세션 ==================
+window.startStudy = async function(deckId){
+  currentDeckId = deckId;
+  const dk = decks.find(d=>d.id===deckId);
+  const session = getResumableSession(deckId);
+
+  isReviewRound = false;
+  wrongCardsCollected = [];
+
+  let useResume = false;
+  if(session){
+    useResume = confirm(`저번에 ${session.idx}/${session.queueIds.length}개까지 학습했어요.\n\n확인: 이어서 하기\n취소: 처음부터 시작`);
+  }
+
+  if(useResume){
+    const rebuilt = session.queueIds
+      .map(id=>currentWords.find(w=>w.id===id))
+      .filter(Boolean)
+      .map(w=>({...w, wasWrong:false}));
+    if(rebuilt.length > 0){
+      studyQueue = rebuilt;
+      studyIdx = Math.min(session.idx, studyQueue.length);
+      studyStats = session.stats || { total: 0, correct: 0 };
+    } else {
+      useResume = false; // 저장된 단어가 모두 삭제된 경우 새로 시작
+    }
+  }
+
+  if(!useResume){
+    if(session) await clearSession();
+    const now = Date.now();
+    // 복습 대상 우선, 부족하면 새 단어로 채움
+    const due = currentWords.filter(w=> !w.nextReview || w.nextReview <= now);
+    const notDue = currentWords.filter(w=> w.nextReview && w.nextReview > now);
+    let queue = due.slice(0, DAILY_LIMIT);
+    if(queue.length < DAILY_LIMIT){
+      queue = queue.concat(notDue.slice(0, DAILY_LIMIT - queue.length));
+    }
+    if(queue.length===0){
+      toast('학습할 단어가 없어요');
+      return;
+    }
+    studyQueue = shuffle(queue.map(w=>({...w, wasWrong:false})));
+    studyIdx = 0;
+    studyStats = { total: 0, correct: 0 };
+  }
+
+  $('study-deck-name').textContent = dk ? dk.name : '';
+  showScreen('screen-study');
+  showCard();
+};
+
+async function saveSession(){
+  if(!currentDeckId) return;
+  const session = {
+    queueIds: studyQueue.map(w=>w.id),
+    idx: studyIdx,
+    stats: studyStats
+  };
+  try{
+    await updateDoc(doc(decksCol(), currentDeckId), { session });
+    const dk = decks.find(d=>d.id===currentDeckId);
+    if(dk) dk.session = session;
+  }catch(e){ console.error('세션 저장 실패', e); }
+}
+
+async function clearSession(){
+  if(!currentDeckId) return;
+  try{
+    await updateDoc(doc(decksCol(), currentDeckId), { session: null });
+    const dk = decks.find(d=>d.id===currentDeckId);
+    if(dk) dk.session = null;
+  }catch(e){ console.error('세션 초기화 실패', e); }
+}
+
+window.exitStudy = function(){
+  openDeck(currentDeckId);
+};
+
+function shuffle(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i],a[j]] = [a[j],a[i]];
+  }
+  return a;
+}
+
+function updateProgress(){
+  const pct = Math.round((studyIdx/studyQueue.length)*100);
+  $('progress-fill').style.width = pct+'%';
+  $('study-count').textContent = `${studyIdx} / ${studyQueue.length}`;
+}
+
+function showCard(){
+  if(studyIdx >= studyQueue.length){
+    finishStudy();
+    return;
+  }
+  currentCard = studyQueue[studyIdx];
+  studyStage = 'flip';
+  updateProgress();
+  $('stage-card').classList.remove('hidden');
+  $('stage-quiz').classList.add('hidden');
+  $('stage-spell').classList.add('hidden');
+
+  $('card-term').textContent = currentCard.term;
+  $('card-meaning').textContent = currentCard.meaning;
+  hide('card-meaning');
+  show('tap-hint');
+  hide('answer-row');
+  const wtag = $('wrong-tag');
+  if(currentCard.wasWrong) wtag.classList.remove('hidden'); else wtag.classList.add('hidden');
+  const card = $('flash-card');
+  card.classList.remove('flip-out');
+}
+
+$('flash-card').addEventListener('click', ()=>{
+  if(studyStage!=='flip') return;
+  const meaning = $('card-meaning');
+  if(meaning.classList.contains('hidden')){
+    meaning.classList.remove('hidden');
+    hide('tap-hint');
+    show('answer-row');
+  }
+});
+
+window.answerCard = function(known){
+  if(known){
+    // 뜻 확인 단계 통과 -> 4지선다로
+    goQuiz();
+  } else {
+    currentCard.wasWrong = true;
+    goQuiz(); // 모른다고 해도 퀴즈에서 다시 기회를 줌 (재생 연습)
+  }
+};
+
+function goQuiz(){
+  studyStage = 'quiz';
+  $('stage-card').classList.add('hidden');
+  $('stage-quiz').classList.remove('hidden');
+
+  $('quiz-q').textContent = '뜻에 맞는 단어를 고르세요';
+  $('quiz-term').textContent = currentCard.meaning;
+
+  const pool = currentWords.filter(w=>w.id!==currentCard.id).map(w=>w.term);
+  const distractors = shuffle(pool).slice(0,3);
+  const options = shuffle([currentCard.term, ...distractors]);
+
+  const wrap = $('quiz-options');
+  wrap.innerHTML = '';
+  options.forEach(opt=>{
+    const btn = document.createElement('button');
+    btn.className = 'quiz-opt';
+    btn.textContent = opt;
+    btn.onclick = ()=>selectQuizOption(btn, opt, options);
+    wrap.appendChild(btn);
+  });
+}
+
+function selectQuizOption(btn, opt, allOptions){
+  const buttons = Array.from($('quiz-options').children);
+  buttons.forEach(b=>b.disabled = true);
+  const isCorrect = opt === currentCard.term;
+  if(isCorrect){
+    btn.classList.add('correct');
+  } else {
+    btn.classList.add('wrong');
+    currentCard.wasWrong = true;
+    buttons.find(b=>b.textContent===currentCard.term)?.classList.add('correct');
+  }
+  setTimeout(()=>{ goSpell(); }, 700);
+}
+
+function goSpell(){
+  studyStage = 'spell';
+  $('stage-quiz').classList.add('hidden');
+  $('stage-spell').classList.remove('hidden');
+  $('spell-meaning').textContent = currentCard.meaning;
+  const input = $('spell-input');
+  input.value = '';
+  input.disabled = false;
+  input.className = 'spell-input';
+  $('spell-answer').textContent = '';
+  $('spell-submit').textContent = '확인';
+  $('spell-submit').onclick = submitSpell;
+  show('spell-idk');
+  setTimeout(()=>input.focus(), 100);
+}
+
+$('spell-input').addEventListener('keydown', (e)=>{
+  if(e.key==='Enter') submitSpell();
+});
+
+window.giveUpSpell = function(){
+  const input = $('spell-input');
+  if(input.disabled) return;
+  input.disabled = true;
+  input.className = 'spell-input wrong';
+  currentCard.wasWrong = true;
+  studyStats.total++;
+  $('spell-answer').textContent = `정답: ${currentCard.term}`;
+  hide('spell-idk');
+  $('spell-submit').textContent = '다음';
+  $('spell-submit').onclick = ()=>{
+    if(!isReviewRound) updateCardSchedule(false);
+    collectIfWrong();
+    studyIdx++;
+    saveSession();
+    showCard();
+  };
+};
+
+window.submitSpell = function(){
+  const input = $('spell-input');
+  if(input.disabled) return;
+  const val = input.value.trim().toLowerCase();
+  if(!val){
+    $('spell-answer').textContent = '답을 입력하거나, 모르면 아래 버튼을 눌러주세요';
+    return;
+  }
+  const answer = currentCard.term.trim().toLowerCase();
+  const correct = val === answer;
+  input.disabled = true;
+  if(correct){
+    input.className = 'spell-input correct';
+    studyStats.correct++;
+  } else {
+    input.className = 'spell-input wrong';
+    currentCard.wasWrong = true;
+    $('spell-answer').textContent = `정답: ${currentCard.term}`;
+  }
+  studyStats.total++;
+  hide('spell-idk');
+  $('spell-submit').textContent = '다음';
+  $('spell-submit').onclick = ()=>{
+    if(!isReviewRound) updateCardSchedule(!currentCard.wasWrong);
+    collectIfWrong();
+    studyIdx++;
+    saveSession();
+    showCard();
+  };
+};
+
+function collectIfWrong(){
+  if(currentCard.wasWrong && !wrongCardsCollected.some(w=>w.id===currentCard.id)){
+    wrongCardsCollected.push({ id: currentCard.id, term: currentCard.term, meaning: currentCard.meaning });
+  }
+}
+
+async function updateCardSchedule(correct){
+  try{
+    const currentIntervalIdx = INTERVALS.indexOf(currentCard.interval ? currentCard.interval : 0);
+    const baseIdx = currentIntervalIdx===-1 ? 0 : currentIntervalIdx;
+    const { idx, days } = nextIntervalDays(baseIdx, correct);
+    const nextReview = Date.now() + days*24*60*60*1000;
+    await updateDoc(doc(wordsCol(currentDeckId), currentCard.id), {
+      interval: days,
+      nextReview,
+      wrongStreak: correct ? 0 : (currentCard.wrongStreak||0)+1
+    });
+  }catch(e){ console.error(e); }
+}
+
+function finishStudy(){
+  if(!isReviewRound && wrongCardsCollected.length > 0){
+    startReviewRound();
+    return;
+  }
+  clearSession();
+  showScreen('screen-done');
+  $('done-total').textContent = studyStats.total;
+  $('done-correct').textContent = studyStats.correct;
+  $('done-sub').textContent = `${currentDeckId ? (decks.find(d=>d.id===currentDeckId)?.name||'') : ''} 학습을 마쳤어요`;
+}
+
+function startReviewRound(){
+  isReviewRound = true;
+  const count = wrongCardsCollected.length;
+  studyQueue = shuffle(wrongCardsCollected.map(w=>({...w, wasWrong:false})));
+  wrongCardsCollected = [];
+  studyIdx = 0;
+  const dk = decks.find(d=>d.id===currentDeckId);
+  $('study-deck-name').textContent = (dk ? dk.name : '') + ' · 오답 다시 학습';
+  toast(`오답 ${count}개를 다시 학습해요`);
+  showCard();
+}
+
+// ================== Gemini API 호출 ==================
+async function callGemini(parts, retry=0){
+  const model = GEMINI_MODELS[geminiIdx % GEMINI_MODELS.length];
+  geminiIdx++;
+  try{
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-goog-api-key': GEMINI_KEY },
+      body: JSON.stringify({ contents:[{ parts }] })
+    });
+    const data = await res.json();
+    if(data.error){
+      console.warn(model, data.error.message);
+      if(retry < GEMINI_MODELS.length-1) return callGemini(parts, retry+1);
+      throw new Error(data.error.message);
+    }
+    const text = data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('') || '';
+    return text;
+  }catch(e){
+    if(retry < GEMINI_MODELS.length-1) return callGemini(parts, retry+1);
+    throw e;
+  }
+}
+
+function parseJsonArray(text){
+  try{
+    const cleaned = text.replace(/```json/g,'').replace(/```/g,'').trim();
+    const start = cleaned.indexOf('[');
+    const end = cleaned.lastIndexOf(']');
+    if(start===-1 || end===-1) return null;
+    return JSON.parse(cleaned.slice(start, end+1));
+  }catch(e){
+    console.error('parse fail', e);
+    return null;
+  }
+}
+
+// ================== escape ==================
+function escapeHtml(str){
+  return String(str||'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function escapeHtmlAttr(str){ return escapeHtml(str); }
+
+// ================== 초기화 ==================
+goHome();
+
 </script>
-<script src="app.js"></script>
 </body>
 </html>
