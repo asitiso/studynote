@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>모든암기장</title>
+<style>
+  :root{
+    --bg:#FAF9F6;
+    --card:#FFFFFF;
+    --ink:#2B2A27;
+    --sub:#8A8780;
+    --line:#EBE8E0;
+    --accent:#3C3489;
+    --accent-soft:#EEEDFE;
+    --good:#0F6E56;
+    --good-soft:#E1F5EE;
+    --bad:#993C1D;
+    --bad-soft:#FAECE7;
+    --warn:#854F0B;
+    --warn-soft:#FAEEDA;
+    --radius:16px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Segoe UI",sans-serif;
+    height:100%;overscroll-behavior:none;}
+  #app{max-width:480px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;position:relative;}
+
+  /* 공통 */
+  .screen{flex:1;display:flex;flex-direction:column;padding:20px 20px calc(20px + env(safe-area-inset-bottom));}
+  .hidden{display:none !important;}
+  button{font-family:inherit;cursor:pointer;-webkit-appearance:none;appearance:none;border:none;background:none;color:inherit;}
+  input,textarea{font-family:inherit;}
+
+  /* 상단바 */
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;}
+  .topbar .title{font-size:19px;font-weight:700;color:var(--ink);}
+  .icon-btn{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--sub);}
+  .icon-btn:active{background:var(--line);}
+
+  /* 홈: 암기장 목록 */
+  .deck-list{display:flex;flex-direction:column;gap:12px;margin-top:8px;}
+  .deck-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px 20px;display:flex;align-items:center;justify-content:space-between;}
+  .deck-card .left{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0;}
+  .deck-name{font-size:17px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .deck-meta{font-size:13px;color:var(--sub);}
+  .deck-badge{font-size:13px;font-weight:700;color:var(--accent);background:var(--accent-soft);
+    padding:6px 12px;border-radius:20px;min-width:44px;text-align:center;}
+  .empty-state{text-align:center;padding:60px 20px;color:var(--sub);}
+  .empty-state .big{font-size:44px;margin-bottom:12px;}
+  .empty-state .msg{font-size:15px;line-height:1.6;}
+
+  .fab{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);width:min(440px,calc(100% - 40px));
+    display:flex;gap:10px;z-index:50;}
+  .fab button{flex:1;height:56px;border-radius:18px;font-size:16px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;gap:8px;}
+  .fab .primary{background:var(--accent);color:#fff;}
+  .fab .secondary{background:var(--card);color:var(--ink);border:1px solid var(--line);}
+  .fab-spacer{height:90px;}
+
+  /* 카드 뷰포트(학습화면) */
+  .study-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+  .study-deck-name{font-size:14px;color:var(--sub);font-weight:500;}
+  .study-count{font-size:14px;font-weight:700;color:var(--ink);}
+  .progress-track{height:5px;background:var(--line);border-radius:6px;overflow:hidden;margin-bottom:22px;}
+  .progress-fill{height:100%;background:var(--accent);border-radius:6px;transition:width .25s ease;}
+
+  .card-stage{flex:1;display:flex;flex-direction:column;min-height:0;}
+  .flash-card{flex:1;background:var(--card);border:1px solid var(--line);border-radius:24px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:32px 24px;text-align:center;min-height:320px;position:relative;transition:transform .18s ease, opacity .18s ease;}
+  .flash-card.flip-out{opacity:0;transform:scale(.96);}
+  .card-term{font-size:38px;font-weight:800;color:var(--ink);line-height:1.3;word-break:keep-all;}
+  .card-meaning{font-size:19px;color:var(--sub);margin-top:18px;line-height:1.6;word-break:keep-all;}
+  .tap-hint{position:absolute;bottom:22px;font-size:13px;color:var(--sub);opacity:.7;}
+  .wrong-tag{position:absolute;top:18px;left:18px;font-size:12px;font-weight:700;color:var(--warn);
+    background:var(--warn-soft);padding:5px 10px;border-radius:20px;}
+
+  .answer-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;}
+  .answer-row button{height:58px;border-radius:18px;font-size:17px;font-weight:700;border:1.5px solid;}
+  .btn-no{border-color:var(--bad);color:var(--bad);background:var(--bad-soft);}
+  .btn-yes{border-color:var(--good);color:var(--good);background:var(--good-soft);}
+  .answer-row button:active{transform:scale(.97);}
+
+  /* 4지선다 */
+  .quiz-q{font-size:15px;color:var(--sub);margin-bottom:10px;font-weight:500;}
+  .quiz-term{font-size:30px;font-weight:800;color:var(--ink);text-align:center;margin:26px 0 30px;word-break:keep-all;}
+  .quiz-options{display:flex;flex-direction:column;gap:10px;}
+  .quiz-opt{background:var(--card);border:1.5px solid var(--line);border-radius:16px;
+    padding:16px 18px;font-size:16px;font-weight:600;text-align:left;color:var(--ink);}
+  .quiz-opt.correct{border-color:var(--good);background:var(--good-soft);color:var(--good);}
+  .quiz-opt.wrong{border-color:var(--bad);background:var(--bad-soft);color:var(--bad);}
+  .quiz-opt:disabled{opacity:1;}
+
+  /* 스펠링 입력 */
+  .spell-meaning{font-size:22px;font-weight:700;color:var(--ink);text-align:center;margin:30px 0 26px;word-break:keep-all;}
+  .spell-input{width:100%;height:60px;border:1.5px solid var(--line);border-radius:16px;
+    font-size:22px;text-align:center;font-weight:700;padding:0 16px;background:var(--card);color:var(--ink);}
+  .spell-input:focus{outline:none;border-color:var(--accent);}
+  .spell-input.correct{border-color:var(--good);background:var(--good-soft);color:var(--good);}
+  .spell-input.wrong{border-color:var(--bad);background:var(--bad-soft);color:var(--bad);}
+  .spell-answer{text-align:center;font-size:15px;color:var(--sub);margin-top:14px;min-height:20px;}
+  .spell-submit{margin-top:18px;height:56px;border-radius:16px;background:var(--accent);color:#fff;
+    font-size:16px;font-weight:700;}
+
+  /* 완료 화면 */
+  .done-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
+  .done-emoji{font-size:56px;margin-bottom:16px;}
+  .done-title{font-size:22px;font-weight:800;margin-bottom:8px;}
+  .done-sub{font-size:15px;color:var(--sub);margin-bottom:32px;}
+  .done-stats{display:flex;gap:12px;margin-bottom:32px;}
+  .stat-box{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 22px;min-width:90px;}
+  .stat-num{font-size:24px;font-weight:800;}
+  .stat-label{font-size:12px;color:var(--sub);margin-top:4px;}
+  .done-btn{width:100%;max-width:280px;height:56px;border-radius:16px;background:var(--accent);color:#fff;
+    font-size:16px;font-weight:700;}
+
+  /* 단어 추가 화면 */
+  .form-group{margin-bottom:18px;}
+  .form-label{font-size:14px;font-weight:700;color:var(--ink);margin-bottom:8px;display:block;}
+  .form-input,.form-textarea,.form-select{width:100%;border:1.5px solid var(--line);border-radius:14px;
+    padding:14px 16px;font-size:16px;color:var(--ink);background:var(--card);}
+  .form-textarea{min-height:160px;resize:vertical;line-height:1.6;}
+  .form-input:focus,.form-textarea:focus,.form-select:focus{outline:none;border-color:var(--accent);}
+  .form-hint{font-size:13px;color:var(--sub);margin-top:8px;line-height:1.5;}
+
+  .method-tabs{display:flex;gap:8px;margin-bottom:20px;}
+  .method-tab{flex:1;padding:12px 10px;border-radius:14px;border:1.5px solid var(--line);
+    text-align:center;font-size:14px;font-weight:700;color:var(--sub);}
+  .method-tab.active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);}
+
+  .camera-zone{border:2px dashed var(--line);border-radius:20px;padding:40px 20px;text-align:center;
+    display:flex;flex-direction:column;align-items:center;gap:14px;}
+  .camera-zone .cam-icon{font-size:44px;}
+  .camera-zone .cam-text{font-size:15px;color:var(--sub);line-height:1.6;}
+  .cam-btn{background:var(--accent);color:#fff;padding:14px 28px;border-radius:14px;font-size:15px;font-weight:700;}
+
+  .preview-list{display:flex;flex-direction:column;gap:8px;margin-top:16px;}
+  .preview-item{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:12px 14px;display:flex;align-items:center;gap:10px;}
+  .preview-item input{border:none;background:transparent;font-size:15px;color:var(--ink);width:100%;padding:4px 0;}
+  .preview-item input:focus{outline:none;}
+  .preview-item .term-input{font-weight:700;flex:1;}
+  .preview-item .meaning-input{flex:1;color:var(--sub);}
+  .preview-del{color:var(--bad);font-size:20px;padding:4px 8px;flex-shrink:0;}
+
+  .submit-bar{position:sticky;bottom:0;background:var(--bg);padding-top:14px;}
+  .submit-btn{width:100%;height:56px;border-radius:16px;background:var(--accent);color:#fff;font-size:16px;font-weight:700;}
+  .submit-btn:disabled{opacity:.4;}
+
+  /* 단어 목록/편집 */
+  .search-bar{margin-bottom:14px;}
+  .word-row{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:14px 16px;display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;
+    transition:transform .15s ease;}
+  .word-row.swiping{transform:translateX(-70px);}
+  .word-row .wt{font-weight:700;font-size:16px;}
+  .word-row .wm{font-size:14px;color:var(--sub);margin-top:3px;}
+  .word-del-bg{color:#fff;font-size:14px;font-weight:700;}
+
+  .loading-overlay{position:fixed;inset:0;background:rgba(250,249,246,.92);z-index:100;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;}
+  .spinner{width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--accent);
+    border-radius:50%;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .loading-text{font-size:14px;color:var(--sub);}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;
+    padding:12px 22px;border-radius:14px;font-size:14px;font-weight:600;z-index:200;opacity:0;transition:opacity .25s;}
+  .toast.show{opacity:1;}
+
+  .back-row{display:flex;align-items:center;gap:6px;margin-bottom:8px;}
+  .back-btn{font-size:15px;color:var(--sub);font-weight:600;display:flex;align-items:center;gap:4px;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== 1. 홈: 암기장 목록 ===== -->
+  <div id="screen-home" class="screen">
+    <div class="topbar">
+      <span class="title">모든암기장</span>
+    </div>
+    <div id="deck-list" class="deck-list"></div>
+    <div class="fab-spacer"></div>
+  </div>
+
+  <!-- ===== 2. 암기장 상세(단어 목록) ===== -->
+  <div id="screen-deck" class="screen hidden">
+    <div class="back-row">
+      <button class="back-btn" onclick="goHome()">‹ 목록</button>
+    </div>
+    <div class="topbar" style="padding-left:0;padding-right:0;">
+      <span class="title" id="deck-title"></span>
+      <button class="icon-btn" onclick="openDeleteDeck()">🗑</button>
+    </div>
+    <div id="word-list"></div>
+    <div class="fab-spacer"></div>
+  </div>
+
+  <!-- ===== 3. 학습(카드) 화면 ===== -->
+  <div id="screen-study" class="screen hidden">
+    <div class="back-row">
+      <button class="back-btn" onclick="exitStudy()">‹ 그만하기</button>
+    </div>
+    <div class="study-top">
+      <span class="study-deck-name" id="study-deck-name"></span>
+      <span class="study-count" id="study-count"></span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    <div class="card-stage" id="stage-card">
+      <div class="flash-card" id="flash-card">
+        <span class="wrong-tag hidden" id="wrong-tag">다시 복습</span>
+        <div class="card-term" id="card-term"></div>
+        <div class="card-meaning hidden" id="card-meaning"></div>
+        <div class="tap-hint" id="tap-hint">탭해서 뜻 보기</div>
+      </div>
+      <div class="answer-row hidden" id="answer-row">
+        <button class="btn-no" onclick="answerCard(false)">모름</button>
+        <button class="btn-yes" onclick="answerCard(true)">알아요</button>
+      </div>
+    </div>
+
+    <!-- 4지선다 -->
+    <div class="card-stage hidden" id="stage-quiz">
+      <div class="quiz-q" id="quiz-q"></div>
+      <div class="quiz-term" id="quiz-term"></div>
+      <div class="quiz-options" id="quiz-options"></div>
+    </div>
+
+    <!-- 스펠링 입력 -->
+    <div class="card-stage hidden" id="stage-spell">
+      <div class="quiz-q">뜻을 보고 단어를 입력하세요</div>
+      <div class="spell-meaning" id="spell-meaning"></div>
+      <input class="spell-input" id="spell-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="정답 입력">
+      <div class="spell-answer" id="spell-answer"></div>
+      <button class="spell-submit" id="spell-submit" onclick="submitSpell()">확인</button>
+    </div>
+  </div>
+
+  <!-- ===== 4. 완료 화면 ===== -->
+  <div id="screen-done" class="screen hidden">
+    <div class="done-wrap">
+      <div class="done-emoji">🎉</div>
+      <div class="done-title">오늘 학습 완료!</div>
+      <div class="done-sub" id="done-sub"></div>
+      <div class="done-stats">
+        <div class="stat-box"><div class="stat-num" id="done-total" style="color:var(--accent);">0</div><div class="stat-label">학습한 단어</div></div>
+        <div class="stat-box"><div class="stat-num" id="done-correct" style="color:var(--good);">0</div><div class="stat-label">맞춘 개수</div></div>
+      </div>
+      <button class="done-btn" onclick="goHome()">암기장 목록으로</button>
+    </div>
+  </div>
+
+  <!-- ===== 5. 단어 추가 화면 ===== -->
+  <div id="screen-add" class="screen hidden">
+    <div class="back-row">
+      <button class="back-btn" onclick="goBackFromAdd()">‹ 취소</button>
+    </div>
+    <span class="title" id="add-title" style="margin-bottom:16px;display:block;">단어 추가</span>
+
+    <div class="method-tabs">
+      <div class="method-tab active" id="tab-photo" onclick="switchAddTab('photo')">📷 사진으로</div>
+      <div class="method-tab" id="tab-text" onclick="switchAddTab('text')">✏️ 직접 입력</div>
+    </div>
+
+    <!-- 사진 방식 -->
+    <div id="add-photo" >
+      <div class="camera-zone" id="camera-zone">
+        <div class="cam-icon">📷</div>
+        <div class="cam-text">숙제나 교재를 촬영하면<br>AI가 자동으로 단어를 인식해요</div>
+        <button class="cam-btn" onclick="document.getElementById('photo-input').click()">사진 선택</button>
+        <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
+      </div>
+    </div>
+
+    <!-- 텍스트 방식 -->
+    <div id="add-text" class="hidden">
+      <div class="form-group">
+        <label class="form-label">단어와 뜻을 줄바꿈으로 입력하세요</label>
+        <textarea class="form-textarea" id="text-input" placeholder="achieve, 이루다&#10;consider, 고려하다&#10;apple 사과"></textarea>
+        <div class="form-hint">쉼표(,) 또는 띄어쓰기로 단어와 뜻을 구분해 한 줄에 하나씩 입력하세요.</div>
+      </div>
+      <button class="cam-btn" style="width:100%;" onclick="parseTextInput()">단어 추출하기</button>
+    </div>
+
+    <!-- 인식 결과 미리보기 -->
+    <div id="preview-wrap" class="hidden">
+      <div class="form-label" style="margin-top:20px;">인식된 단어 (확인 후 저장)</div>
+      <div class="preview-list" id="preview-list"></div>
+      <div class="submit-bar">
+        <button class="submit-btn" id="save-btn" onclick="saveWords()">전체 저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 6. 암기장 만들기 (모달형 화면) ===== -->
+  <div id="screen-newdeck" class="screen hidden">
+    <div class="back-row">
+      <button class="back-btn" onclick="goHome()">‹ 취소</button>
+    </div>
+    <span class="title" style="margin-bottom:20px;display:block;">새 암기장</span>
+    <div class="form-group">
+      <label class="form-label">암기장 이름</label>
+      <input class="form-input" id="new-deck-name" placeholder="예: 중2 영단어 3과">
+    </div>
+    <button class="submit-btn" onclick="createDeck()">만들기</button>
+  </div>
+
+</div>
+
+<div id="loading-overlay" class="loading-overlay hidden">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loading-text">처리 중...</div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getFirestore, collection, doc, setDoc, getDocs, addDoc, deleteDoc, updateDoc,
+  query, orderBy, writeBatch, serverTimestamp, onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCeyhQKKEnHXyGG0XpOoxP4Wp576eb8QFE",
+  authDomain: "todaysell-d4bbc.firebaseapp.com",
+  projectId: "todaysell-d4bbc",
+  storageBucket: "todaysell-d4bbc.firebasestorage.app",
+  messagingSenderId: "582095937004",
+  appId: "1:582095937004:web:d1547c1e4d022e654074c9",
+  measurementId: "G-WGH0FE0C5Q"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+
+window.__fb = { db, collection, doc, setDoc, getDocs, addDoc, deleteDoc, updateDoc, query, orderBy, writeBatch, serverTimestamp, onSnapshot };
+</script>
+<script src="app.js"></script>
+</body>
+</html>
