@@ -222,6 +222,7 @@
       <span class="study-deck-name" id="study-deck-name"></span>
       <span class="study-count" id="study-count"></span>
     </div>
+    <div id="phase-label" style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:8px;"></div>
     <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <div class="card-stage" id="stage-card">
       <div class="flash-card" id="flash-card">
@@ -378,12 +379,14 @@ let pendingPreview = [];     // 추가 대기 중인 단어 미리보기
 let addTargetDeckId = null;  // 단어를 추가할 대상 암기장
 
 // 학습 세션 상태
-let studyQueue = [];   // 오늘 학습할 카드 목록
+let studyQueue = [];      // 이번 회차에서 학습할 고정 카드 목록 (단계가 바뀌어도 안 바뀜)
+let phaseOrder = ['flip','quiz','spell']; // 진행할 단계 순서
+let phaseIndex = 0;       // 현재 진행 중인 단계 인덱스
+let phaseQueue = [];      // 현재 단계에서 사용할 셔플된 카드 순서
 let studyIdx = 0;
-let studyStage = 'flip'; // flip -> quiz -> spell
 let studyStats = { total: 0, correct: 0 };
 let currentCard = null;
-let wrongCardsCollected = []; // 이번 세션에서 틀린 카드 모음 (오답 복습 라운드용)
+let wrongIds = new Set(); // 이번 메인 회차에서 한 번이라도 틀린 카드 id 모음
 let isReviewRound = false;    // 지금이 오답 복습 라운드인지
 
 const DAILY_LIMIT = 20; // 하루 학습 개수 캡
@@ -603,7 +606,8 @@ window.openDeck = async function(deckId){
 function getResumableSession(deckId){
   const dk = decks.find(d=>d.id===deckId);
   const s = dk && dk.session;
-  if(s && Array.isArray(s.queueIds) && s.idx < s.queueIds.length) return s;
+  const pq = s && (s.phaseQueueIds || s.queueIds);
+  if(s && Array.isArray(pq) && s.idx < pq.length) return s;
   return null;
 }
 
@@ -611,8 +615,9 @@ function renderDeckSessionInfo(){
   const el = $('deck-session-info');
   const session = getResumableSession(currentDeckId);
   if(!session){ el.innerHTML = ''; return; }
+  const pq = session.phaseQueueIds || session.queueIds;
   el.innerHTML = `<div style="font-size:13px;color:var(--sub);margin-bottom:12px;">
-    저번에 ${session.idx}/${session.queueIds.length}개까지 학습했어요.
+    저번에 ${session.idx}/${pq.length}개까지 학습했어요.
   </div>`;
 }
 
@@ -903,22 +908,25 @@ window.startStudy = async function(deckId){
   const session = getResumableSession(deckId);
 
   isReviewRound = false;
-  wrongCardsCollected = [];
+  wrongIds = new Set();
 
   let useResume = false;
   if(session){
-    useResume = confirm(`저번에 ${session.idx}/${session.queueIds.length}개까지 학습했어요.\n\n확인: 이어서 하기\n취소: 처음부터 시작`);
+    useResume = confirm(`저번에 ${session.idx}/${(session.phaseQueueIds||session.queueIds).length}개까지 학습했어요.\n\n확인: 이어서 하기\n취소: 처음부터 시작`);
   }
 
   if(useResume){
-    const rebuilt = session.queueIds
-      .map(id=>currentWords.find(w=>w.id===id))
-      .filter(Boolean)
-      .map(w=>({...w, wasWrong:false}));
-    if(rebuilt.length > 0){
-      studyQueue = rebuilt;
-      studyIdx = Math.min(session.idx, studyQueue.length);
+    const rebuiltQueue = (session.queueIds||[]).map(id=>currentWords.find(w=>w.id===id)).filter(Boolean);
+    const rebuiltPhaseQueue = (session.phaseQueueIds||session.queueIds||[]).map(id=>currentWords.find(w=>w.id===id)).filter(Boolean);
+    if(rebuiltQueue.length > 0 && rebuiltPhaseQueue.length > 0){
+      studyQueue = rebuiltQueue;
+      phaseOrder = session.phaseOrder || ['flip','quiz','spell'];
+      phaseIndex = session.phaseIndex || 0;
+      phaseQueue = rebuiltPhaseQueue;
+      studyIdx = Math.min(session.idx, phaseQueue.length);
       studyStats = session.stats || { total: 0, correct: 0 };
+      wrongIds = new Set(session.wrongIds || []);
+      isReviewRound = !!session.isReviewRound;
     } else {
       useResume = false; // 저장된 단어가 모두 삭제된 경우 새로 시작
     }
@@ -938,7 +946,10 @@ window.startStudy = async function(deckId){
       toast('학습할 단어가 없어요');
       return;
     }
-    studyQueue = shuffle(queue.map(w=>({...w, wasWrong:false})));
+    studyQueue = queue.map(w=>({...w}));
+    phaseOrder = ['flip','quiz','spell'];
+    phaseIndex = 0;
+    phaseQueue = shuffle(studyQueue.map(w=>({...w})));
     studyIdx = 0;
     studyStats = { total: 0, correct: 0 };
   }
@@ -952,8 +963,13 @@ async function saveSession(){
   if(!currentDeckId) return;
   const session = {
     queueIds: studyQueue.map(w=>w.id),
+    phaseOrder,
+    phaseIndex,
+    phaseQueueIds: phaseQueue.map(w=>w.id),
     idx: studyIdx,
-    stats: studyStats
+    stats: studyStats,
+    wrongIds: Array.from(wrongIds),
+    isReviewRound
   };
   try{
     await updateDoc(doc(decksCol(), currentDeckId), { session });
@@ -984,37 +1000,61 @@ function shuffle(arr){
   return a;
 }
 
+const PHASE_LABELS = {
+  flip: '1/3 단계 · 카드 익히기',
+  quiz: '2/3 단계 · 뜻 보고 단어 고르기',
+  spell: '3/3 단계 · 뜻 보고 단어 쓰기'
+};
+
 function updateProgress(){
-  const pct = Math.round((studyIdx/studyQueue.length)*100);
+  const pct = Math.round((studyIdx/phaseQueue.length)*100);
   $('progress-fill').style.width = pct+'%';
-  $('study-count').textContent = `${studyIdx} / ${studyQueue.length}`;
+  $('study-count').textContent = `${studyIdx} / ${phaseQueue.length}`;
+  const phase = phaseOrder[phaseIndex];
+  $('phase-label').textContent = phaseOrder.length>1 ? (PHASE_LABELS[phase]||'') : '오답 다시 확인';
 }
 
 function showCard(){
-  if(studyIdx >= studyQueue.length){
-    finishStudy();
+  if(studyIdx >= phaseQueue.length){
+    advancePhaseOrFinish();
     return;
   }
-  currentCard = studyQueue[studyIdx];
-  studyStage = 'flip';
+  currentCard = phaseQueue[studyIdx];
   updateProgress();
+  const phase = phaseOrder[phaseIndex];
+  if(phase === 'flip') showFlipStage();
+  else if(phase === 'quiz') showQuizStage();
+  else if(phase === 'spell') showSpellStage();
+}
+
+function advancePhaseOrFinish(){
+  if(phaseIndex < phaseOrder.length - 1){
+    phaseIndex++;
+    phaseQueue = shuffle(studyQueue.map(w=>({...w})));
+    studyIdx = 0;
+    saveSession();
+    showCard();
+  } else {
+    finishMainCycle();
+  }
+}
+
+function showFlipStage(){
   $('stage-card').classList.remove('hidden');
   $('stage-quiz').classList.add('hidden');
   $('stage-spell').classList.add('hidden');
-
   $('card-term').textContent = currentCard.term;
   $('card-meaning').textContent = currentCard.meaning;
   hide('card-meaning');
   show('tap-hint');
   hide('answer-row');
   const wtag = $('wrong-tag');
-  if(currentCard.wasWrong) wtag.classList.remove('hidden'); else wtag.classList.add('hidden');
-  const card = $('flash-card');
-  card.classList.remove('flip-out');
+  if(wrongIds.has(currentCard.id)) wtag.classList.remove('hidden'); else wtag.classList.add('hidden');
+  $('flash-card').classList.remove('flip-out');
 }
 
 $('flash-card').addEventListener('click', ()=>{
-  if(studyStage!=='flip') return;
+  if(phaseOrder[phaseIndex]!=='flip') return;
   const meaning = $('card-meaning');
   if(meaning.classList.contains('hidden')){
     meaning.classList.remove('hidden');
@@ -1024,19 +1064,16 @@ $('flash-card').addEventListener('click', ()=>{
 });
 
 window.answerCard = function(known){
-  if(known){
-    // 뜻 확인 단계 통과 -> 4지선다로
-    goQuiz();
-  } else {
-    currentCard.wasWrong = true;
-    goQuiz(); // 모른다고 해도 퀴즈에서 다시 기회를 줌 (재생 연습)
-  }
+  if(!known) wrongIds.add(currentCard.id);
+  studyIdx++;
+  saveSession();
+  showCard();
 };
 
-function goQuiz(){
-  studyStage = 'quiz';
+function showQuizStage(){
   $('stage-card').classList.add('hidden');
   $('stage-quiz').classList.remove('hidden');
+  $('stage-spell').classList.add('hidden');
 
   $('quiz-q').textContent = '뜻에 맞는 단어를 고르세요';
   $('quiz-term').textContent = currentCard.meaning;
@@ -1051,27 +1088,33 @@ function goQuiz(){
     const btn = document.createElement('button');
     btn.className = 'quiz-opt';
     btn.textContent = opt;
-    btn.onclick = ()=>selectQuizOption(btn, opt, options);
+    btn.onclick = ()=>selectQuizOption(btn, opt);
     wrap.appendChild(btn);
   });
 }
 
-function selectQuizOption(btn, opt, allOptions){
+function selectQuizOption(btn, opt){
   const buttons = Array.from($('quiz-options').children);
   buttons.forEach(b=>b.disabled = true);
   const isCorrect = opt === currentCard.term;
+  studyStats.total++;
   if(isCorrect){
     btn.classList.add('correct');
+    studyStats.correct++;
   } else {
     btn.classList.add('wrong');
-    currentCard.wasWrong = true;
+    wrongIds.add(currentCard.id);
     buttons.find(b=>b.textContent===currentCard.term)?.classList.add('correct');
   }
-  setTimeout(()=>{ goSpell(); }, 700);
+  setTimeout(()=>{
+    studyIdx++;
+    saveSession();
+    showCard();
+  }, 700);
 }
 
-function goSpell(){
-  studyStage = 'spell';
+function showSpellStage(){
+  $('stage-card').classList.add('hidden');
   $('stage-quiz').classList.add('hidden');
   $('stage-spell').classList.remove('hidden');
   $('spell-meaning').textContent = currentCard.meaning;
@@ -1095,14 +1138,12 @@ window.giveUpSpell = function(){
   if(input.disabled) return;
   input.disabled = true;
   input.className = 'spell-input wrong';
-  currentCard.wasWrong = true;
+  wrongIds.add(currentCard.id);
   studyStats.total++;
   $('spell-answer').textContent = `정답: ${currentCard.term}`;
   hide('spell-idk');
   $('spell-submit').textContent = '다음';
   $('spell-submit').onclick = ()=>{
-    if(!isReviewRound) updateCardSchedule(false);
-    collectIfWrong();
     studyIdx++;
     saveSession();
     showCard();
@@ -1125,43 +1166,41 @@ window.submitSpell = function(){
     studyStats.correct++;
   } else {
     input.className = 'spell-input wrong';
-    currentCard.wasWrong = true;
+    wrongIds.add(currentCard.id);
     $('spell-answer').textContent = `정답: ${currentCard.term}`;
   }
   studyStats.total++;
   hide('spell-idk');
   $('spell-submit').textContent = '다음';
   $('spell-submit').onclick = ()=>{
-    if(!isReviewRound) updateCardSchedule(!currentCard.wasWrong);
-    collectIfWrong();
     studyIdx++;
     saveSession();
     showCard();
   };
 };
 
-function collectIfWrong(){
-  if(currentCard.wasWrong && !wrongCardsCollected.some(w=>w.id===currentCard.id)){
-    wrongCardsCollected.push({ id: currentCard.id, term: currentCard.term, meaning: currentCard.meaning });
-  }
-}
-
-async function updateCardSchedule(correct){
+async function updateCardSchedule(card, correct){
   try{
-    const currentIntervalIdx = INTERVALS.indexOf(currentCard.interval ? currentCard.interval : 0);
+    const currentIntervalIdx = INTERVALS.indexOf(card.interval ? card.interval : 0);
     const baseIdx = currentIntervalIdx===-1 ? 0 : currentIntervalIdx;
     const { idx, days } = nextIntervalDays(baseIdx, correct);
     const nextReview = Date.now() + days*24*60*60*1000;
-    await updateDoc(doc(wordsCol(currentDeckId), currentCard.id), {
+    await updateDoc(doc(wordsCol(currentDeckId), card.id), {
       interval: days,
       nextReview,
-      wrongStreak: correct ? 0 : (currentCard.wrongStreak||0)+1
+      wrongStreak: correct ? 0 : (card.wrongStreak||0)+1
     });
   }catch(e){ console.error(e); }
 }
 
-function finishStudy(){
-  if(!isReviewRound && wrongCardsCollected.length > 0){
+async function finishMainCycle(){
+  if(!isReviewRound){
+    // 전체 카드에 대해 간격반복 스케줄을 한 번씩 갱신 (3단계를 모두 통과한 뒤 최종 결과 기준)
+    for(const card of studyQueue){
+      await updateCardSchedule(card, !wrongIds.has(card.id));
+    }
+  }
+  if(!isReviewRound && wrongIds.size > 0){
     startReviewRound();
     return;
   }
@@ -1174,13 +1213,17 @@ function finishStudy(){
 
 function startReviewRound(){
   isReviewRound = true;
-  const count = wrongCardsCollected.length;
-  studyQueue = shuffle(wrongCardsCollected.map(w=>({...w, wasWrong:false})));
-  wrongCardsCollected = [];
+  const ids = Array.from(wrongIds);
+  const cards = ids.map(id=>currentWords.find(w=>w.id===id)).filter(Boolean);
+  if(cards.length===0){ finishMainCycle(); return; }
+  studyQueue = cards.map(w=>({...w}));
+  phaseOrder = ['spell']; // 복습 라운드는 스펠링 확인 한 단계만 진행
+  phaseIndex = 0;
+  phaseQueue = shuffle(studyQueue.map(w=>({...w})));
   studyIdx = 0;
-  const dk = decks.find(d=>d.id===currentDeckId);
-  $('study-deck-name').textContent = (dk ? dk.name : '') + ' · 오답 다시 학습';
-  toast(`오답 ${count}개를 다시 학습해요`);
+  wrongIds = new Set();
+  toast(`오답 ${cards.length}개를 다시 학습해요`);
+  saveSession();
   showCard();
 }
 
