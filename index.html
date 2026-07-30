@@ -458,6 +458,11 @@ async function loadDecks(){
       });
       dk.dueCount = due;
     }
+    decks.sort((a,b)=>{
+      const ao = (a.order!==undefined) ? a.order : (a.createdAt||0);
+      const bo = (b.order!==undefined) ? b.order : (b.createdAt||0);
+      return ao - bo;
+    });
     renderDeckList();
   }catch(e){
     console.error(e);
@@ -505,7 +510,8 @@ window.addStarterDeck = async function(idx){
   loading(true, '기본 자료 추가 중...');
   try{
     const dref = doc(decksCol());
-    await setDoc(dref, { name: st.name, createdAt: Date.now() });
+    const maxOrder = decks.reduce((m,d)=>Math.max(m, d.order!==undefined?d.order:0), 0);
+    await setDoc(dref, { name: st.name, createdAt: Date.now(), order: maxOrder + 1 });
     const batch = writeBatch(db);
     for(const [term, meaning] of st.words){
       const wref = doc(wordsCol(dref.id));
@@ -566,7 +572,8 @@ function renderDeckList(){
     wrap.innerHTML = decks.map(dk=>{
       const theme = getSubjectTheme(dk.name);
       return `
-      <div class="deck-card" onclick="openDeck('${dk.id}')">
+      <div class="deck-card" data-deck-id="${dk.id}" onclick="openDeck('${dk.id}')">
+        <div class="drag-handle" onclick="event.stopPropagation()" style="cursor:grab;color:var(--sub);font-size:18px;padding:4px 8px 4px 0;flex-shrink:0;touch-action:none;">⠿</div>
         <div style="width:44px;height:44px;border-radius:12px;background:${theme.soft};display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;margin-right:12px;">${theme.emoji}</div>
         <div class="left">
           <div class="deck-name">${escapeHtml(dk.name||'이름없음')}</div>
@@ -576,8 +583,97 @@ function renderDeckList(){
       </div>
     `;
     }).join('') + renderStarterSection();
+    setupDragReorder();
   }
   renderHomeFab();
+}
+
+function setupDragReorder(){
+  const wrap = $('deck-list');
+  let dragEl = null;      // 실제로 옮겨지는 원본 DOM 요소
+  let startY = 0;
+  let placeholder = null;
+  let dragging = false;
+
+  const handles = wrap.querySelectorAll('.drag-handle');
+  handles.forEach(handle=>{
+    handle.onpointerdown = (e)=>{
+      e.preventDefault();
+      dragEl = handle.closest('.deck-card');
+      if(!dragEl) return;
+      dragging = true;
+      startY = e.clientY;
+      const rect = dragEl.getBoundingClientRect();
+      placeholder = document.createElement('div');
+      placeholder.style.height = rect.height + 'px';
+      placeholder.style.margin = getComputedStyle(dragEl).margin;
+      placeholder.style.border = '2px dashed var(--line)';
+      placeholder.style.borderRadius = '16px';
+      dragEl.parentNode.insertBefore(placeholder, dragEl.nextSibling);
+      dragEl.style.position = 'fixed';
+      dragEl.style.left = rect.left + 'px';
+      dragEl.style.top = rect.top + 'px';
+      dragEl.style.width = rect.width + 'px';
+      dragEl.style.zIndex = 1000;
+      dragEl.style.boxShadow = '0 8px 24px rgba(0,0,0,0.18)';
+      dragEl.style.pointerEvents = 'none';
+      document.body.appendChild(dragEl);
+
+      const onMove = (ev)=>{
+        if(!dragging) return;
+        const dy = ev.clientY - startY;
+        dragEl.style.top = (rect.top + dy) + 'px';
+        // 현재 포인터 위치 기준으로 어느 카드 위에 있는지 찾기
+        const cards = Array.from(wrap.querySelectorAll('.deck-card'));
+        for(const card of cards){
+          const r = card.getBoundingClientRect();
+          const mid = r.top + r.height/2;
+          if(ev.clientY < mid){
+            card.parentNode.insertBefore(placeholder, card);
+            return;
+          }
+        }
+        wrap.appendChild(placeholder);
+      };
+      const onUp = ()=>{
+        if(!dragging) return;
+        dragging = false;
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        placeholder.parentNode.insertBefore(dragEl, placeholder);
+        placeholder.remove();
+        dragEl.style.position = '';
+        dragEl.style.left = '';
+        dragEl.style.top = '';
+        dragEl.style.width = '';
+        dragEl.style.zIndex = '';
+        dragEl.style.boxShadow = '';
+        dragEl.style.pointerEvents = '';
+        persistDeckOrder();
+      };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    };
+  });
+}
+
+async function persistDeckOrder(){
+  const wrap = $('deck-list');
+  const ids = Array.from(wrap.querySelectorAll('.deck-card')).map(el=>el.getAttribute('data-deck-id'));
+  try{
+    const batch = writeBatch(db);
+    ids.forEach((id, idx)=>{
+      const dk = decks.find(d=>d.id===id);
+      if(dk) dk.order = idx;
+      batch.update(doc(decksCol(), id), { order: idx });
+    });
+    await batch.commit();
+    decks.sort((a,b)=>{
+      const ao = (a.order!==undefined) ? a.order : (a.createdAt||0);
+      const bo = (b.order!==undefined) ? b.order : (b.createdAt||0);
+      return ao - bo;
+    });
+  }catch(e){ console.error('순서 저장 실패', e); }
 }
 
 function renderHomeFab(){
@@ -607,7 +703,8 @@ window.createDeck = async function(){
   loading(true, '만드는 중...');
   try{
     const ref = doc(decksCol());
-    await setDoc(ref, { name, createdAt: Date.now() });
+    const maxOrder = decks.reduce((m,d)=>Math.max(m, d.order!==undefined?d.order:0), 0);
+    await setDoc(ref, { name, createdAt: Date.now(), order: maxOrder + 1 });
     loading(false);
     goHome();
   }catch(e){
