@@ -1197,6 +1197,17 @@ function speakText(text){
   }catch(err){ console.error(err); }
 }
 
+function isHanjaDeck(){
+  const dk = decks.find(d=>d.id===currentDeckId);
+  return !!(dk && dk.name && dk.name.startsWith('한자'));
+}
+
+function extractReading(meaning){
+  // "학교 교 (木, 나무목) — ..." 형태에서 앞부분 훈음만 추출
+  const m = meaning.match(/^([^(—]+)/);
+  return m ? m[1].trim() : meaning;
+}
+
 function shuffle(arr){
   const a = arr.slice();
   for(let i=a.length-1;i>0;i--){
@@ -1281,8 +1292,9 @@ function showQuizStage(){
   $('stage-quiz').classList.remove('hidden');
   $('stage-spell').classList.add('hidden');
 
-  $('quiz-q').textContent = '뜻에 맞는 단어를 고르세요';
-  $('quiz-term').textContent = currentCard.meaning;
+  const hanja = isHanjaDeck();
+  $('quiz-q').textContent = hanja ? '훈음에 맞는 한자를 고르세요' : '뜻에 맞는 단어를 고르세요';
+  $('quiz-term').textContent = hanja ? extractReading(currentCard.meaning) : currentCard.meaning;
 
   const pool = currentWords.filter(w=>w.id!==currentCard.id).map(w=>w.term);
   const distractors = shuffle(pool).slice(0,3);
@@ -1325,7 +1337,7 @@ function showSpellStage(){
   $('stage-card').classList.add('hidden');
   $('stage-quiz').classList.add('hidden');
   $('stage-spell').classList.remove('hidden');
-  $('spell-meaning').textContent = currentCard.meaning;
+  $('spell-meaning').textContent = isHanjaDeck() ? currentCard.term : currentCard.meaning;
   const input = $('spell-input');
   input.value = '';
   input.disabled = false;
@@ -1350,7 +1362,7 @@ window.giveUpSpell = function(){
   wrongIds.add(currentCard.id);
   studyStats.total++;
   playWrongSound();
-  $('spell-answer').textContent = `정답: ${currentCard.term}`;
+  $('spell-answer').textContent = `정답: ${isHanjaDeck() ? extractReading(currentCard.meaning) : currentCard.term}`;
   show('spell-speak-btn');
   hide('spell-idk');
   $('spell-submit').textContent = '다음';
@@ -1369,8 +1381,9 @@ window.submitSpell = function(){
     $('spell-answer').textContent = '답을 입력하거나, 모르면 아래 버튼을 눌러주세요';
     return;
   }
-  const answer = currentCard.term.trim().toLowerCase();
-  const correct = val === answer;
+  const hanja = isHanjaDeck();
+  const correctAnswer = (hanja ? extractReading(currentCard.meaning) : currentCard.term).trim().toLowerCase();
+  const correct = val === correctAnswer;
   input.disabled = true;
   if(correct){
     input.className = 'spell-input correct pop-correct';
@@ -1380,7 +1393,7 @@ window.submitSpell = function(){
     input.className = 'spell-input wrong shake-wrong';
     wrongIds.add(currentCard.id);
     playWrongSound();
-    $('spell-answer').textContent = `정답: ${currentCard.term}`;
+    $('spell-answer').textContent = `정답: ${hanja ? extractReading(currentCard.meaning) : currentCard.term}`;
   }
   studyStats.total++;
   show('spell-speak-btn');
