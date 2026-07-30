@@ -228,8 +228,9 @@
 
   <!-- ===== 3. 학습(카드) 화면 ===== -->
   <div id="screen-study" class="screen hidden">
-    <div class="back-row">
+    <div class="back-row" style="justify-content:space-between;">
       <button class="back-btn" onclick="exitStudy()">‹ 그만하기</button>
+      <button class="icon-btn" id="sound-toggle-btn" onclick="toggleSound()" style="color:var(--sub);">🔊</button>
     </div>
     <div class="study-top">
       <span class="study-deck-name" id="study-deck-name"></span>
@@ -986,6 +987,7 @@ window.startStudy = async function(deckId){
 
   $('study-deck-name').textContent = dk ? dk.name : '';
   showScreen('screen-study');
+  updateSoundBtnIcon();
   showCard();
 };
 
@@ -1019,6 +1021,65 @@ async function clearSession(){
 
 window.exitStudy = function(){
   openDeck(currentDeckId);
+};
+
+// ================== 효과음 (오디오 파일 없이 브라우저에서 직접 생성) ==================
+let soundEnabled = (typeof localStorage !== 'undefined' && localStorage.getItem('allmemo_sound') === 'off') ? false : true;
+let audioCtx = null;
+
+function getAudioCtx(){
+  if(!audioCtx){
+    try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch(e){ return null; }
+  }
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playTone(freq, startTime, duration, gainPeak){
+  const ctx = getAudioCtx();
+  if(!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  const t0 = ctx.currentTime + startTime;
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(gainPeak, t0 + 0.02);
+  gain.gain.linearRampToValueAtTime(0, t0 + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.02);
+}
+
+function playCorrectSound(){
+  if(!soundEnabled) return;
+  playTone(880, 0, 0.12, 0.12);
+  playTone(1174, 0.1, 0.15, 0.12);
+}
+
+function playWrongSound(){
+  if(!soundEnabled) return;
+  playTone(220, 0, 0.22, 0.1);
+}
+
+function playCheerSound(){
+  if(!soundEnabled) return;
+  playTone(523, 0, 0.13, 0.12);
+  playTone(659, 0.12, 0.13, 0.12);
+  playTone(784, 0.24, 0.24, 0.14);
+}
+
+function updateSoundBtnIcon(){
+  const btn = $('sound-toggle-btn');
+  if(btn) btn.textContent = soundEnabled ? '🔊' : '🔇';
+}
+
+window.toggleSound = function(){
+  soundEnabled = !soundEnabled;
+  try{ localStorage.setItem('allmemo_sound', soundEnabled ? 'on' : 'off'); }catch(e){}
+  updateSoundBtnIcon();
 };
 
 window.speakCurrentTerm = function(e){
@@ -1149,10 +1210,12 @@ function selectQuizOption(btn, opt){
   if(isCorrect){
     btn.classList.add('correct', 'pop-correct');
     studyStats.correct++;
+    playCorrectSound();
   } else {
     btn.classList.add('wrong', 'shake-wrong');
     wrongIds.add(currentCard.id);
     buttons.find(b=>b.textContent===currentCard.term)?.classList.add('correct', 'pop-correct');
+    playWrongSound();
   }
   setTimeout(()=>{
     studyIdx++;
@@ -1189,6 +1252,7 @@ window.giveUpSpell = function(){
   input.className = 'spell-input wrong shake-wrong';
   wrongIds.add(currentCard.id);
   studyStats.total++;
+  playWrongSound();
   $('spell-answer').textContent = `정답: ${currentCard.term}`;
   show('spell-speak-btn');
   hide('spell-idk');
@@ -1214,9 +1278,11 @@ window.submitSpell = function(){
   if(correct){
     input.className = 'spell-input correct pop-correct';
     studyStats.correct++;
+    playCorrectSound();
   } else {
     input.className = 'spell-input wrong shake-wrong';
     wrongIds.add(currentCard.id);
+    playWrongSound();
     $('spell-answer').textContent = `정답: ${currentCard.term}`;
   }
   studyStats.total++;
@@ -1289,6 +1355,7 @@ async function finishMainCycle(){
   $('done-correct').textContent = studyStats.correct;
   $('done-sub').textContent = `${currentDeckId ? (decks.find(d=>d.id===currentDeckId)?.name||'') : ''} 학습을 마쳤어요`;
   spawnConfetti();
+  playCheerSound();
 }
 
 function startReviewRound(){
