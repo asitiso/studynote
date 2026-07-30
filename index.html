@@ -174,6 +174,19 @@
   .spinner{width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--accent);
     border-radius:50%;animation:spin .8s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* 색종이 효과 (완료 화면) */
+  .confetti-piece{position:absolute;top:-12px;width:8px;height:14px;border-radius:2px;opacity:.9;
+    animation:confetti-fall 1.5s ease-in forwards;}
+  @keyframes confetti-fall{
+    to{ transform:translateY(420px) rotate(360deg); opacity:0; }
+  }
+
+  /* 정답/오답 반응 애니메이션 */
+  @keyframes pop-correct{0%{transform:scale(1);}40%{transform:scale(1.06);}100%{transform:scale(1);}}
+  @keyframes shake-wrong{0%,100%{transform:translateX(0);}20%{transform:translateX(-6px);}40%{transform:translateX(6px);}60%{transform:translateX(-4px);}80%{transform:translateX(4px);}}
+  .pop-correct{animation:pop-correct .3s ease;}
+  .shake-wrong{animation:shake-wrong .3s ease;}
   .loading-text{font-size:14px;color:var(--sub);}
 
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;
@@ -227,6 +240,7 @@
     <div class="card-stage" id="stage-card">
       <div class="flash-card" id="flash-card">
         <span class="wrong-tag hidden" id="wrong-tag">다시 복습</span>
+        <button id="speak-btn" onclick="speakCurrentTerm(event)" style="position:absolute;top:16px;right:16px;width:40px;height:40px;border-radius:12px;font-size:18px;color:var(--sub);">🔊</button>
         <div class="card-term" id="card-term"></div>
         <div class="card-meaning hidden" id="card-meaning"></div>
         <div class="tap-hint" id="tap-hint">탭해서 뜻 보기</div>
@@ -250,16 +264,18 @@
       <div class="spell-meaning" id="spell-meaning"></div>
       <input class="spell-input" id="spell-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="정답 입력">
       <div class="spell-answer" id="spell-answer"></div>
+      <button id="spell-speak-btn" onclick="speakCurrentTerm(event)" class="hidden" style="display:block;margin:6px auto 0;background:transparent;color:var(--accent);font-size:14px;font-weight:600;">🔊 발음 듣기</button>
       <button class="spell-submit" id="spell-submit" onclick="submitSpell()">확인</button>
       <button id="spell-idk" onclick="giveUpSpell()" style="width:100%;height:48px;margin-top:10px;border-radius:14px;font-size:15px;font-weight:600;color:var(--sub);background:transparent;border:1.5px solid var(--line);">잘 모르겠어요</button>
     </div>
   </div>
 
   <!-- ===== 4. 완료 화면 ===== -->
-  <div id="screen-done" class="screen hidden">
+  <div id="screen-done" class="screen hidden" style="position:relative;overflow:hidden;">
+    <div id="confetti-wrap" style="position:absolute;inset:0;pointer-events:none;"></div>
     <div class="done-wrap">
-      <div class="done-emoji">🎉</div>
-      <div class="done-title">오늘 학습 완료!</div>
+      <div class="done-emoji" id="done-emoji">🎉</div>
+      <div class="done-title" id="done-title">오늘 학습 완료!</div>
       <div class="done-sub" id="done-sub"></div>
       <div class="done-stats">
         <div class="stat-box"><div class="stat-num" id="done-total" style="color:var(--accent);">0</div><div class="stat-label">학습한 단어</div></div>
@@ -529,6 +545,15 @@ function renderStarterSection(){
   </div>`;
 }
 
+function getSubjectTheme(name){
+  name = name || '';
+  if(name.startsWith('중학 화학')) return { emoji:'🧪', color:'#7C3AED', soft:'#F3E8FF' };
+  if(name.startsWith('중학 물리')) return { emoji:'⚡', color:'#2563EB', soft:'#DBEAFE' };
+  if(name.startsWith('중학 생물')) return { emoji:'🌱', color:'#16A34A', soft:'#DCFCE7' };
+  if(name.startsWith('중학 지구과학')) return { emoji:'🌍', color:'#0891B2', soft:'#CFFAFE' };
+  return { emoji:'📚', color:'#3C3489', soft:'#EEEDFE' };
+}
+
 function renderDeckList(){
   const wrap = $('deck-list');
   if(decks.length===0){
@@ -537,15 +562,19 @@ function renderDeckList(){
       <div class="msg">아직 암기장이 없어요.<br>아래 버튼으로 첫 암기장을 만들거나,<br>기본 자료로 시작해보세요.</div>
     </div>` + renderStarterSection();
   } else {
-    wrap.innerHTML = decks.map(dk=>`
+    wrap.innerHTML = decks.map(dk=>{
+      const theme = getSubjectTheme(dk.name);
+      return `
       <div class="deck-card" onclick="openDeck('${dk.id}')">
+        <div style="width:44px;height:44px;border-radius:12px;background:${theme.soft};display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;margin-right:12px;">${theme.emoji}</div>
         <div class="left">
           <div class="deck-name">${escapeHtml(dk.name||'이름없음')}</div>
           <div class="deck-meta">전체 ${dk.wordCount||0}개</div>
         </div>
-        <div class="deck-badge">${dk.dueCount||0}</div>
+        <div class="deck-badge" style="background:${theme.soft};color:${theme.color};">${dk.dueCount||0}</div>
       </div>
-    `).join('') + renderStarterSection();
+    `;
+    }).join('') + renderStarterSection();
   }
   renderHomeFab();
 }
@@ -635,6 +664,7 @@ function renderWordList(){
       <div>
         <div class="wt">${escapeHtml(w.term)}</div>
         <div class="wm">${escapeHtml(w.meaning)}</div>
+        ${(w.wrongStreak||0) >= 2 ? `<span style="font-size:11px;font-weight:700;color:var(--warn);background:var(--warn-soft);padding:3px 8px;border-radius:10px;margin-top:5px;display:inline-block;">🔥 ${w.wrongStreak}번 틀림</span>` : ''}
       </div>
       <div style="display:flex;gap:2px;flex-shrink:0;">
         <button class="icon-btn" onclick="editWord('${w.id}')" style="color:var(--sub);">✎</button>
@@ -991,6 +1021,24 @@ window.exitStudy = function(){
   openDeck(currentDeckId);
 };
 
+window.speakCurrentTerm = function(e){
+  if(e) e.stopPropagation();
+  if(!currentCard) return;
+  speakText(currentCard.term);
+};
+
+function speakText(text){
+  try{
+    if(!('speechSynthesis' in window)){ toast('이 기기에서는 발음 재생을 지원하지 않아요'); return; }
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    // 영어(알파벳)로만 이루어진 단어면 영어 발음, 아니면 한국어로 읽음
+    utter.lang = /^[A-Za-z\s.,'’-]+$/.test(text.trim()) ? 'en-US' : 'ko-KR';
+    utter.rate = 0.9;
+    window.speechSynthesis.speak(utter);
+  }catch(err){ console.error(err); }
+}
+
 function shuffle(arr){
   const a = arr.slice();
   for(let i=a.length-1;i>0;i--){
@@ -1099,12 +1147,12 @@ function selectQuizOption(btn, opt){
   const isCorrect = opt === currentCard.term;
   studyStats.total++;
   if(isCorrect){
-    btn.classList.add('correct');
+    btn.classList.add('correct', 'pop-correct');
     studyStats.correct++;
   } else {
-    btn.classList.add('wrong');
+    btn.classList.add('wrong', 'shake-wrong');
     wrongIds.add(currentCard.id);
-    buttons.find(b=>b.textContent===currentCard.term)?.classList.add('correct');
+    buttons.find(b=>b.textContent===currentCard.term)?.classList.add('correct', 'pop-correct');
   }
   setTimeout(()=>{
     studyIdx++;
@@ -1123,6 +1171,7 @@ function showSpellStage(){
   input.disabled = false;
   input.className = 'spell-input';
   $('spell-answer').textContent = '';
+  hide('spell-speak-btn');
   $('spell-submit').textContent = '확인';
   $('spell-submit').onclick = submitSpell;
   show('spell-idk');
@@ -1137,10 +1186,11 @@ window.giveUpSpell = function(){
   const input = $('spell-input');
   if(input.disabled) return;
   input.disabled = true;
-  input.className = 'spell-input wrong';
+  input.className = 'spell-input wrong shake-wrong';
   wrongIds.add(currentCard.id);
   studyStats.total++;
   $('spell-answer').textContent = `정답: ${currentCard.term}`;
+  show('spell-speak-btn');
   hide('spell-idk');
   $('spell-submit').textContent = '다음';
   $('spell-submit').onclick = ()=>{
@@ -1162,14 +1212,15 @@ window.submitSpell = function(){
   const correct = val === answer;
   input.disabled = true;
   if(correct){
-    input.className = 'spell-input correct';
+    input.className = 'spell-input correct pop-correct';
     studyStats.correct++;
   } else {
-    input.className = 'spell-input wrong';
+    input.className = 'spell-input wrong shake-wrong';
     wrongIds.add(currentCard.id);
     $('spell-answer').textContent = `정답: ${currentCard.term}`;
   }
   studyStats.total++;
+  show('spell-speak-btn');
   hide('spell-idk');
   $('spell-submit').textContent = '다음';
   $('spell-submit').onclick = ()=>{
@@ -1193,6 +1244,31 @@ async function updateCardSchedule(card, correct){
   }catch(e){ console.error(e); }
 }
 
+const CHEER_MESSAGES = [
+  { emoji:'🎉', title:'완벽해요!' },
+  { emoji:'⭐', title:'최고예요!' },
+  { emoji:'👏', title:'오늘도 한 걸음 더!' },
+  { emoji:'🙌', title:'대단해요!' },
+  { emoji:'✨', title:'잘했어요!' },
+  { emoji:'🔥', title:'멋지게 해냈어요!' }
+];
+
+function spawnConfetti(){
+  const wrap = $('confetti-wrap');
+  wrap.innerHTML = '';
+  const colors = ['#7C3AED','#2563EB','#16A34A','#F59E0B','#EF4444','#0891B2'];
+  for(let i=0;i<28;i++){
+    const p = document.createElement('div');
+    p.className = 'confetti-piece';
+    p.style.left = (Math.random()*100)+'%';
+    p.style.background = colors[Math.floor(Math.random()*colors.length)];
+    p.style.animationDelay = (Math.random()*0.4)+'s';
+    p.style.animationDuration = (1.1 + Math.random()*0.8)+'s';
+    wrap.appendChild(p);
+  }
+  setTimeout(()=>{ wrap.innerHTML = ''; }, 2200);
+}
+
 async function finishMainCycle(){
   if(!isReviewRound){
     // 전체 카드에 대해 간격반복 스케줄을 한 번씩 갱신 (3단계를 모두 통과한 뒤 최종 결과 기준)
@@ -1206,9 +1282,13 @@ async function finishMainCycle(){
   }
   clearSession();
   showScreen('screen-done');
+  const cheer = CHEER_MESSAGES[Math.floor(Math.random()*CHEER_MESSAGES.length)];
+  $('done-emoji').textContent = cheer.emoji;
+  $('done-title').textContent = cheer.title;
   $('done-total').textContent = studyStats.total;
   $('done-correct').textContent = studyStats.correct;
   $('done-sub').textContent = `${currentDeckId ? (decks.find(d=>d.id===currentDeckId)?.name||'') : ''} 학습을 마쳤어요`;
+  spawnConfetti();
 }
 
 function startReviewRound(){
