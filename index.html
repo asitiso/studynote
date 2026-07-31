@@ -573,6 +573,7 @@ function renderStarterSection(){
 function getSubjectTheme(name){
   name = name || '';
   if(name.startsWith('한자')) return { emoji:'🈶', color:'#B45309', soft:'#FEF3C7' };
+  if(name.startsWith('수능영단어')) return { emoji:'📘', color:'#BE185D', soft:'#FCE7F3' };
   if(name.startsWith('중학 화학')) return { emoji:'🧪', color:'#7C3AED', soft:'#F3E8FF' };
   if(name.startsWith('중학 물리')) return { emoji:'⚡', color:'#2563EB', soft:'#DBEAFE' };
   if(name.startsWith('중학 생물')) return { emoji:'🌱', color:'#16A34A', soft:'#DCFCE7' };
@@ -583,6 +584,7 @@ function getSubjectTheme(name){
 function getSubjectGroup(name){
   name = name || '';
   if(name.startsWith('한자')) return '한자';
+  if(name.startsWith('수능영단어')) return '수능영단어';
   if(name.startsWith('중학 화학')) return '화학';
   if(name.startsWith('중학 물리')) return '물리';
   if(name.startsWith('중학 생물')) return '생물';
@@ -591,7 +593,7 @@ function getSubjectGroup(name){
 }
 
 let deckSearchQuery = '';
-const collapsedGroups = new Set(['한자','화학','물리','생물','지구과학']); // 기본은 접어서 시작 (내 암기장만 펼침)
+const collapsedGroups = new Set(['한자','수능영단어','화학','물리','생물','지구과학']); // 기본은 접어서 시작 (내 암기장만 펼침)
 
 window.onDeckSearchInput = function(){
   deckSearchQuery = $('deck-search').value.trim().toLowerCase();
@@ -619,7 +621,7 @@ function renderDeckCardHtml(dk){
   `;
 }
 
-const GROUP_ORDER = ['내 암기장','한자','화학','물리','생물','지구과학'];
+const GROUP_ORDER = ['내 암기장','한자','수능영단어','화학','물리','생물','지구과학'];
 
 function renderDeckList(){
   const wrap = $('deck-list');
@@ -649,7 +651,7 @@ function renderDeckList(){
     (groups[g] = groups[g] || []).push(dk);
   });
 
-  const GROUP_REP_NAME = { '한자':'한자','화학':'중학 화학','물리':'중학 물리','생물':'중학 생물','지구과학':'중학 지구과학','내 암기장':'' };
+  const GROUP_REP_NAME = { '한자':'한자','수능영단어':'수능영단어','화학':'중학 화학','물리':'중학 물리','생물':'중학 생물','지구과학':'중학 지구과학','내 암기장':'' };
 
   let html = '';
   GROUP_ORDER.forEach(g=>{
