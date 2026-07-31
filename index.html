@@ -55,6 +55,18 @@
   .deck-card .left{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0;}
   .deck-name{font-size:17px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .deck-meta{font-size:13px;color:var(--sub);}
+
+  .group-header{border:none;border-radius:18px;padding:18px 20px;margin-bottom:10px;
+    display:flex;align-items:center;justify-content:space-between;cursor:pointer;
+    transition:transform .12s ease, box-shadow .12s ease;box-shadow:0 1px 0 rgba(0,0,0,.02);}
+  .group-header:active{transform:scale(0.97);}
+  .group-header .g-emoji{font-size:26px;flex-shrink:0;}
+  .group-header .g-title{font-weight:800;font-size:19px;}
+  .group-header .g-count{font-size:14px;font-weight:600;opacity:.75;}
+  .group-header .g-chevron{font-size:16px;display:inline-block;
+    transition:transform .28s cubic-bezier(.34,1.56,.64,1);}
+  .group-header .g-due{font-size:13px;font-weight:800;padding:6px 12px;border-radius:14px;
+    background:rgba(255,255,255,.6);}
   .deck-badge{font-size:13px;font-weight:700;color:var(--accent);background:var(--accent-soft);
     padding:6px 12px;border-radius:20px;min-width:44px;text-align:center;}
   .empty-state{text-align:center;padding:60px 20px;color:var(--sub);}
@@ -637,19 +649,25 @@ function renderDeckList(){
     (groups[g] = groups[g] || []).push(dk);
   });
 
+  const GROUP_REP_NAME = { '한자':'한자','화학':'중학 화학','물리':'중학 물리','생물':'중학 생물','지구과학':'중학 지구과학','내 암기장':'' };
+
   let html = '';
   GROUP_ORDER.forEach(g=>{
     const list = groups[g];
     if(!list || list.length===0) return;
     const dueSum = list.reduce((s,d)=>s+(d.dueCount||0),0);
     const collapsed = collapsedGroups.has(g);
-    html += `<div class="group-header" onclick="toggleGroup('${g}')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 6px 10px;cursor:pointer;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:12px;color:var(--sub);display:inline-block;transition:transform .15s;transform:rotate(${collapsed?0:90}deg);">▶</span>
-        <span style="font-weight:800;font-size:16px;color:var(--ink);">${g}</span>
-        <span style="font-size:13px;color:var(--sub);">${list.length}개</span>
+    const theme = getSubjectTheme(GROUP_REP_NAME[g]);
+    html += `<div class="group-header" onclick="toggleGroup('${g}')" style="background:${theme.soft};">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+        <span class="g-emoji">${theme.emoji}</span>
+        <span class="g-title" style="color:${theme.color};">${g}</span>
+        <span class="g-count" style="color:${theme.color};">${list.length}개</span>
       </div>
-      ${dueSum>0 ? `<span style="font-size:12px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:4px 10px;border-radius:12px;">오늘 ${dueSum}개</span>` : ''}
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        ${dueSum>0 ? `<span class="g-due" style="color:${theme.color};">오늘 ${dueSum}</span>` : ''}
+        <span class="g-chevron" style="color:${theme.color};transform:rotate(${collapsed?0:90}deg);">▶</span>
+      </div>
     </div>`;
     if(!collapsed) html += list.map(renderDeckCardHtml).join('');
   });
