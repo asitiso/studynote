@@ -464,8 +464,8 @@ async function loadDecks(){
     const snap = await getDocs(decksCol());
     decks = [];
     snap.forEach(d=>decks.push({ id:d.id, ...d.data() }));
-    // 단어 개수 세기
-    for(const dk of decks){
+    // 단어 개수 세기 (암기장마다 순서대로 X, 한꺼번에 동시에 O)
+    await Promise.all(decks.map(async (dk)=>{
       const wsnap = await getDocs(wordsCol(dk.id));
       dk.wordCount = wsnap.size;
       let due = 0;
@@ -475,7 +475,7 @@ async function loadDecks(){
         if(!data.nextReview || data.nextReview <= now) due++;
       });
       dk.dueCount = due;
-    }
+    }));
     decks.sort((a,b)=>{
       const ao = (a.order!==undefined) ? a.order : (a.createdAt||0);
       const bo = (b.order!==undefined) ? b.order : (b.createdAt||0);
@@ -511,7 +511,7 @@ let starterLoadFailed = false;
 async function loadStarterDecks(){
   if(STARTER_DECKS !== null || starterLoadFailed) return;
   try{
-    const res = await fetch('starter-decks.json', { cache: 'no-cache' });
+    const res = await fetch('starter-decks.json'); // 브라우저 캐시 허용 (매번 새로 안 받아도 됨)
     if(!res.ok) throw new Error('HTTP ' + res.status);
     STARTER_DECKS = await res.json();
   }catch(e){
