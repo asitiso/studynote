@@ -208,6 +208,9 @@
     <div class="topbar">
       <span class="title">모든암기장</span>
     </div>
+    <input type="text" id="deck-search" placeholder="🔍 암기장 검색" oninput="onDeckSearchInput()"
+      style="width:100%;border:1.5px solid var(--line);border-radius:14px;padding:12px 16px;font-size:15px;
+      background:var(--card);color:var(--ink);margin-bottom:14px;">
     <div id="deck-list" class="deck-list"></div>
     <div class="fab-spacer"></div>
   </div>
@@ -557,12 +560,54 @@ function renderStarterSection(){
 
 function getSubjectTheme(name){
   name = name || '';
+  if(name.startsWith('한자')) return { emoji:'🈶', color:'#B45309', soft:'#FEF3C7' };
   if(name.startsWith('중학 화학')) return { emoji:'🧪', color:'#7C3AED', soft:'#F3E8FF' };
   if(name.startsWith('중학 물리')) return { emoji:'⚡', color:'#2563EB', soft:'#DBEAFE' };
   if(name.startsWith('중학 생물')) return { emoji:'🌱', color:'#16A34A', soft:'#DCFCE7' };
   if(name.startsWith('중학 지구과학')) return { emoji:'🌍', color:'#0891B2', soft:'#CFFAFE' };
   return { emoji:'📚', color:'#3C3489', soft:'#EEEDFE' };
 }
+
+function getSubjectGroup(name){
+  name = name || '';
+  if(name.startsWith('한자')) return '한자';
+  if(name.startsWith('중학 화학')) return '화학';
+  if(name.startsWith('중학 물리')) return '물리';
+  if(name.startsWith('중학 생물')) return '생물';
+  if(name.startsWith('중학 지구과학')) return '지구과학';
+  return '내 암기장';
+}
+
+let deckSearchQuery = '';
+const collapsedGroups = new Set(['한자','화학','물리','생물','지구과학']); // 기본은 접어서 시작 (내 암기장만 펼침)
+
+window.onDeckSearchInput = function(){
+  deckSearchQuery = $('deck-search').value.trim().toLowerCase();
+  renderDeckList();
+};
+
+window.toggleGroup = function(group){
+  if(collapsedGroups.has(group)) collapsedGroups.delete(group);
+  else collapsedGroups.add(group);
+  renderDeckList();
+};
+
+function renderDeckCardHtml(dk){
+  const theme = getSubjectTheme(dk.name);
+  return `
+    <div class="deck-card" data-deck-id="${dk.id}" onclick="openDeck('${dk.id}')">
+      <div class="drag-handle" onclick="event.stopPropagation()" style="cursor:grab;color:var(--sub);font-size:18px;padding:4px 8px 4px 0;flex-shrink:0;touch-action:none;">⠿</div>
+      <div style="width:44px;height:44px;border-radius:12px;background:${theme.soft};display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;margin-right:12px;">${theme.emoji}</div>
+      <div class="left">
+        <div class="deck-name">${escapeHtml(dk.name||'이름없음')}</div>
+        <div class="deck-meta">전체 ${dk.wordCount||0}개</div>
+      </div>
+      <div class="deck-badge" style="background:${theme.soft};color:${theme.color};">${dk.dueCount||0}</div>
+    </div>
+  `;
+}
+
+const GROUP_ORDER = ['내 암기장','한자','화학','물리','생물','지구과학'];
 
 function renderDeckList(){
   const wrap = $('deck-list');
@@ -571,23 +616,46 @@ function renderDeckList(){
       <div class="big">📚</div>
       <div class="msg">아직 암기장이 없어요.<br>아래 버튼으로 첫 암기장을 만들거나,<br>기본 자료로 시작해보세요.</div>
     </div>` + renderStarterSection();
-  } else {
-    wrap.innerHTML = decks.map(dk=>{
-      const theme = getSubjectTheme(dk.name);
-      return `
-      <div class="deck-card" data-deck-id="${dk.id}" onclick="openDeck('${dk.id}')">
-        <div class="drag-handle" onclick="event.stopPropagation()" style="cursor:grab;color:var(--sub);font-size:18px;padding:4px 8px 4px 0;flex-shrink:0;touch-action:none;">⠿</div>
-        <div style="width:44px;height:44px;border-radius:12px;background:${theme.soft};display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;margin-right:12px;">${theme.emoji}</div>
-        <div class="left">
-          <div class="deck-name">${escapeHtml(dk.name||'이름없음')}</div>
-          <div class="deck-meta">전체 ${dk.wordCount||0}개</div>
-        </div>
-        <div class="deck-badge" style="background:${theme.soft};color:${theme.color};">${dk.dueCount||0}</div>
-      </div>
-    `;
-    }).join('') + renderStarterSection();
-    setupDragReorder();
+    renderHomeFab();
+    return;
   }
+
+  if(deckSearchQuery){
+    const filtered = decks.filter(dk=>(dk.name||'').toLowerCase().includes(deckSearchQuery));
+    wrap.innerHTML = (filtered.length===0
+      ? `<div class="empty-state"><div class="big">🔍</div><div class="msg">"${escapeHtml(deckSearchQuery)}"에 맞는 암기장이 없어요.</div></div>`
+      : filtered.map(renderDeckCardHtml).join('')
+    ) + renderStarterSection();
+    setupDragReorder();
+    renderHomeFab();
+    return;
+  }
+
+  const groups = {};
+  decks.forEach(dk=>{
+    const g = getSubjectGroup(dk.name);
+    (groups[g] = groups[g] || []).push(dk);
+  });
+
+  let html = '';
+  GROUP_ORDER.forEach(g=>{
+    const list = groups[g];
+    if(!list || list.length===0) return;
+    const dueSum = list.reduce((s,d)=>s+(d.dueCount||0),0);
+    const collapsed = collapsedGroups.has(g);
+    html += `<div class="group-header" onclick="toggleGroup('${g}')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 6px 10px;cursor:pointer;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:12px;color:var(--sub);display:inline-block;transition:transform .15s;transform:rotate(${collapsed?0:90}deg);">▶</span>
+        <span style="font-weight:800;font-size:16px;color:var(--ink);">${g}</span>
+        <span style="font-size:13px;color:var(--sub);">${list.length}개</span>
+      </div>
+      ${dueSum>0 ? `<span style="font-size:12px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:4px 10px;border-radius:12px;">오늘 ${dueSum}개</span>` : ''}
+    </div>`;
+    if(!collapsed) html += list.map(renderDeckCardHtml).join('');
+  });
+  html += renderStarterSection();
+  wrap.innerHTML = html;
+  setupDragReorder();
   renderHomeFab();
 }
 
