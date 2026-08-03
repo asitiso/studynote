@@ -240,6 +240,7 @@
       </div>
     </div>
     <div id="deck-session-info"></div>
+    <div id="deck-stats" style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;"></div>
     <div id="word-list"></div>
     <div class="fab-spacer"></div>
   </div>
@@ -408,6 +409,10 @@ const GEMINI_MODELS = [
 let geminiIdx = 0;
 
 let decks = [];              // 암기장 목록
+let deckWordsCache = {};     // 홈 로드 시 캐시된 암기장별 단어 목록 (오답모음용)
+let globalWrongCount = 0;    // 전체 암기장 통틀어 자주 틀리는 단어 수
+let distractorPool = [];     // 4지선다 오답 보기용 단어 풀
+let isGlobalSession = false; // 지금이 "오답 모음"(여러 암기장 통합) 학습 세션인지
 let currentDeckId = null;    // 현재 열람 중인 암기장
 let currentWords = [];       // 현재 암기장의 단어들
 let pendingPreview = [];     // 추가 대기 중인 단어 미리보기
@@ -464,18 +469,18 @@ async function loadDecks(){
     const snap = await getDocs(decksCol());
     decks = [];
     snap.forEach(d=>decks.push({ id:d.id, ...d.data() }));
-    // 단어 개수 세기 (암기장마다 순서대로 X, 한꺼번에 동시에 O)
+    // 단어 개수 세기 (암기장마다 순서대로 X, 한꺼번에 동시에 O) + 오답노트용 캐시
     await Promise.all(decks.map(async (dk)=>{
       const wsnap = await getDocs(wordsCol(dk.id));
-      dk.wordCount = wsnap.size;
-      let due = 0;
+      const wordsArr = [];
+      wsnap.forEach(w=>wordsArr.push({ id:w.id, ...w.data() }));
+      deckWordsCache[dk.id] = wordsArr;
+      dk.wordCount = wordsArr.length;
       const now = Date.now();
-      wsnap.forEach(w=>{
-        const data = w.data();
-        if(!data.nextReview || data.nextReview <= now) due++;
-      });
-      dk.dueCount = due;
+      dk.dueCount = wordsArr.filter(w=> !w.nextReview || w.nextReview <= now).length;
+      dk.wrongCount = wordsArr.filter(w=> (w.wrongStreak||0) >= 2).length;
     }));
+    globalWrongCount = decks.reduce((s,d)=>s+(d.wrongCount||0), 0);
     decks.sort((a,b)=>{
       const ao = (a.order!==undefined) ? a.order : (a.createdAt||0);
       const bo = (b.order!==undefined) ? b.order : (b.createdAt||0);
@@ -505,33 +510,47 @@ function showLoadError(e){
 
 
 // ================== 기본 제공 자료 (외부 JSON에서 로드) ==================
-let STARTER_DECKS = null;   // null = 아직 로드 전, [] = 로드했지만 없음
+let STARTER_INDEX = null;     // [{name, count, file}] - 가벼운 목록만
 let starterLoadFailed = false;
+let starterGroupCache = {};   // 그룹파일(예: starter-hanja.json)별 캐시 - 한 번 받으면 재사용
 
 async function loadStarterDecks(){
-  if(STARTER_DECKS !== null || starterLoadFailed) return;
+  if(STARTER_INDEX !== null || starterLoadFailed) return;
   try{
-    const res = await fetch('starter-decks.json'); // 브라우저 캐시 허용 (매번 새로 안 받아도 됨)
+    const res = await fetch('starter-index.json'); // 이름·개수만 담은 가벼운 목록 (몇 KB)
     if(!res.ok) throw new Error('HTTP ' + res.status);
-    STARTER_DECKS = await res.json();
+    STARTER_INDEX = await res.json();
   }catch(e){
-    console.warn('기본 자료 로드 실패', e);
+    console.warn('기본 자료 목록 로드 실패', e);
     starterLoadFailed = true;
-    STARTER_DECKS = [];
+    STARTER_INDEX = [];
   }
 }
 
+async function loadStarterGroupFile(file){
+  if(starterGroupCache[file]) return starterGroupCache[file];
+  const res = await fetch(file);
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  starterGroupCache[file] = data;
+  return data;
+}
+
 window.addStarterDeck = async function(idx){
-  const st = STARTER_DECKS[idx];
+  const st = STARTER_INDEX[idx];
   if(!st) return;
-  if(!confirm(`"${st.name}" (${st.words.length}개 카드)를 추가할까요?`)) return;
+  if(!confirm(`"${st.name}" (${st.count}개 카드)를 추가할까요?`)) return;
   loading(true, '기본 자료 추가 중...');
   try{
+    const groupData = await loadStarterGroupFile(st.file); // 실제 단어 내용은 이때 처음 받아옴
+    const full = groupData.find(d=>d.name === st.name);
+    if(!full) throw new Error('자료를 찾을 수 없어요');
+
     const dref = doc(decksCol());
     const maxOrder = decks.reduce((m,d)=>Math.max(m, d.order!==undefined?d.order:0), 0);
-    await setDoc(dref, { name: st.name, createdAt: Date.now(), order: maxOrder + 1 });
+    await setDoc(dref, { name: full.name, createdAt: Date.now(), order: maxOrder + 1 });
     const batch = writeBatch(db);
-    for(const [term, meaning] of st.words){
+    for(const [term, meaning] of full.words){
       const wref = doc(wordsCol(dref.id));
       batch.set(wref, { term, meaning, createdAt: Date.now(), interval:0, ease:2.3, nextReview:0, wrongStreak:0 });
     }
@@ -547,14 +566,14 @@ function renderStarterSection(){
     return `<div style="margin-top:22px;">
       <div class="empty-state" style="padding:24px 20px;">
         <div class="msg" style="font-size:13px;">기본 제공 자료를 불러오지 못했어요.<br>
-        starter-decks.json 파일이 index.html과 같은 폴더에 있는지,<br>웹서버(또는 GitHub Pages)로 열었는지 확인해주세요.</div>
+        starter-index.json 등 자료 파일들이 index.html과 같은 폴더에 있는지,<br>웹서버(또는 GitHub Pages)로 열었는지 확인해주세요.</div>
       </div>
     </div>`;
   }
-  if(!STARTER_DECKS || STARTER_DECKS.length===0) return '';
+  if(!STARTER_INDEX || STARTER_INDEX.length===0) return '';
   // 이미 같은 이름의 덱이 있으면 그 항목은 숨김
   const existing = new Set(decks.map(d=>d.name));
-  const remain = STARTER_DECKS.map((s,i)=>({...s, idx:i})).filter(s=>!existing.has(s.name));
+  const remain = STARTER_INDEX.map((s,i)=>({...s, idx:i})).filter(s=>!existing.has(s.name));
   if(remain.length===0) return '';
   return `<div style="margin-top:22px;">
     <div style="font-size:13px;font-weight:700;color:var(--sub);margin-bottom:10px;">기본 제공 자료</div>
@@ -562,7 +581,7 @@ function renderStarterSection(){
       <div class="deck-card" style="margin-bottom:10px;background:var(--accent-soft);border-color:transparent;" onclick="addStarterDeck(${s.idx})">
         <div class="left">
           <div class="deck-name" style="color:var(--accent);">${escapeHtml(s.name)}</div>
-          <div class="deck-meta">${s.words.length}개 카드 · 탭해서 추가</div>
+          <div class="deck-meta">${s.count}개 카드 · 탭해서 추가</div>
         </div>
         <div class="deck-badge">+</div>
       </div>
@@ -654,6 +673,17 @@ function renderDeckList(){
   const GROUP_REP_NAME = { '한자':'한자','수능영단어':'수능영단어','화학':'중학 화학','물리':'중학 물리','생물':'중학 생물','지구과학':'중학 지구과학','내 암기장':'' };
 
   let html = '';
+  if(globalWrongCount > 0){
+    html += `<div onclick="startGlobalWrongNoteStudy()" style="background:var(--warn-soft);border-radius:18px;
+      padding:16px 20px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;
+      cursor:pointer;" class="group-header">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;">🔥</span>
+        <span style="font-weight:800;font-size:16px;color:var(--warn);">전체 오답 모음 학습</span>
+      </div>
+      <span style="font-weight:800;font-size:15px;color:var(--warn);">${globalWrongCount}개 →</span>
+    </div>`;
+  }
   GROUP_ORDER.forEach(g=>{
     const list = groups[g];
     if(!list || list.length===0) return;
@@ -817,6 +847,7 @@ window.openDeck = async function(deckId){
     renderWordList();
   }catch(e){ console.error(e); toast('불러오기 실패'); }
   loading(false);
+  renderDeckStats();
   renderDeckSessionInfo();
   renderDeckFab();
 };
@@ -837,6 +868,29 @@ function renderDeckSessionInfo(){
   el.innerHTML = `<div style="font-size:13px;color:var(--sub);margin-bottom:12px;">
     저번에 ${session.idx}/${pq.length}개까지 학습했어요.
   </div>`;
+}
+
+function renderDeckStats(){
+  const el = $('deck-stats');
+  if(currentWords.length===0){ el.innerHTML=''; return; }
+  const now = Date.now();
+  const due = currentWords.filter(w=> !w.nextReview || w.nextReview <= now).length;
+  const mastered = currentWords.filter(w=> (w.interval||0) >= 35).length;
+  const struggling = currentWords.filter(w=> (w.wrongStreak||0) >= 2);
+
+  const chip = (label, num, color, soft, onclick)=>`
+    <div ${onclick ? `onclick="${onclick}"` : ''} style="flex:1;min-width:70px;background:${soft};border-radius:14px;padding:10px 8px;text-align:center;${onclick?'cursor:pointer;':''}">
+      <div style="font-size:18px;font-weight:800;color:${color};">${num}</div>
+      <div style="font-size:11px;color:${color};font-weight:600;">${label}</div>
+    </div>`;
+
+  el.innerHTML =
+    chip('전체', currentWords.length, 'var(--ink)', 'var(--card)') +
+    chip('오늘 복습', due, 'var(--accent)', 'var(--accent-soft)') +
+    chip('완전암기', mastered, 'var(--good)', 'var(--good-soft)') +
+    (struggling.length>0
+      ? chip('자주틀림 →', struggling.length, 'var(--warn)', 'var(--warn-soft)', `startWrongNoteStudy('${currentDeckId}')`)
+      : chip('자주틀림', 0, 'var(--sub)', 'var(--card)'));
 }
 
 function renderWordList(){
@@ -878,6 +932,7 @@ window.editWord = async function(wordId){
     w.term = term;
     w.meaning = meaning;
     renderWordList();
+    renderDeckStats();
     toast('수정했어요');
   }catch(e){ console.error(e); toast('수정 실패'); }
 };
@@ -887,6 +942,7 @@ window.deleteWord = async function(wordId){
     await deleteDoc(doc(wordsCol(currentDeckId), wordId));
     currentWords = currentWords.filter(w=>w.id!==wordId);
     renderWordList();
+    renderDeckStats();
     toast('삭제됐어요');
   }catch(e){ console.error(e); toast('삭제 실패'); }
 };
@@ -1121,9 +1177,69 @@ function nextIntervalDays(currentIdx, correct){
 }
 
 // ================== 학습 세션 ==================
+window.startGlobalWrongNoteStudy = function(){
+  const collected = [];
+  decks.forEach(dk=>{
+    const words = deckWordsCache[dk.id] || [];
+    const hanja = dk.name && dk.name.startsWith('한자');
+    words.forEach(w=>{
+      if((w.wrongStreak||0) >= 2){
+        collected.push({ ...w, _isHanja: !!hanja, _deckId: dk.id });
+      }
+    });
+  });
+  if(collected.length===0){ toast('자주 틀리는 단어가 없어요'); return; }
+
+  currentDeckId = null;
+  isGlobalSession = true;
+  isReviewRound = false;
+  wrongIds = new Set();
+  studyQueue = collected;
+  phaseOrder = ['flip','quiz','spell'];
+  phaseIndex = 0;
+  phaseQueue = shuffle(studyQueue.map(w=>({...w})));
+  studyIdx = 0;
+  studyStats = { total: 0, correct: 0 };
+  // 4지선다 오답 보기는 전체 암기장 단어를 통틀어 뽑음
+  distractorPool = Object.values(deckWordsCache).flat().map(w=>w.term);
+
+  $('study-deck-name').textContent = '전체 오답 모음';
+  showScreen('screen-study');
+  updateSoundBtnIcon();
+  showCard();
+};
+
+window.startWrongNoteStudy = function(deckId){
+  currentDeckId = deckId;
+  isGlobalSession = false;
+  const wrongWords = currentWords.filter(w=>(w.wrongStreak||0) >= 2);
+  if(wrongWords.length===0){ toast('자주 틀리는 단어가 없어요'); return; }
+
+  const hanja = deckIsHanja(deckId);
+  isReviewRound = false;
+  wrongIds = new Set();
+  studyQueue = wrongWords.map(w=>({...w}));
+  phaseOrder = ['flip','quiz','spell'];
+  phaseIndex = 0;
+  phaseQueue = shuffle(studyQueue.map(w=>({...w})));
+  studyIdx = 0;
+  studyStats = { total: 0, correct: 0 };
+  studyQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
+  phaseQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
+  distractorPool = currentWords.map(w=>w.term);
+
+  const dk = decks.find(d=>d.id===deckId);
+  $('study-deck-name').textContent = (dk ? dk.name : '') + ' · 오답노트';
+  showScreen('screen-study');
+  updateSoundBtnIcon();
+  showCard();
+};
+
 window.startStudy = async function(deckId){
   currentDeckId = deckId;
+  isGlobalSession = false;
   const dk = decks.find(d=>d.id===deckId);
+  const hanja = deckIsHanja(deckId);
   const session = getResumableSession(deckId);
 
   isReviewRound = false;
@@ -1173,6 +1289,11 @@ window.startStudy = async function(deckId){
     studyStats = { total: 0, correct: 0 };
   }
 
+  // 카드마다 출처(한자 여부/암기장 id) 태깅 - 오답모음처럼 여러 암기장이 섞이는 세션 대비
+  studyQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
+  phaseQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
+  distractorPool = currentWords.map(w=>w.term);
+
   $('study-deck-name').textContent = dk ? dk.name : '';
   showScreen('screen-study');
   updateSoundBtnIcon();
@@ -1180,7 +1301,7 @@ window.startStudy = async function(deckId){
 };
 
 async function saveSession(){
-  if(!currentDeckId) return;
+  if(!currentDeckId || isGlobalSession) return; // 오답모음(여러 암기장 통합) 세션은 이어하기 대상에서 제외
   const session = {
     queueIds: studyQueue.map(w=>w.id),
     phaseOrder,
@@ -1208,7 +1329,8 @@ async function clearSession(){
 }
 
 window.exitStudy = function(){
-  openDeck(currentDeckId);
+  if(isGlobalSession) goHome();
+  else openDeck(currentDeckId);
 };
 
 // ================== 효과음 (오디오 파일 없이 브라우저에서 직접 생성) ==================
@@ -1288,7 +1410,15 @@ function speakText(text){
   }catch(err){ console.error(err); }
 }
 
+function deckIsHanja(deckId){
+  const dk = decks.find(d=>d.id===deckId);
+  return !!(dk && dk.name && dk.name.startsWith('한자'));
+}
+
 function isHanjaDeck(){
+  // 카드마다 출처 암기장이 다를 수 있는 "오답 모음" 세션도 지원하기 위해,
+  // 카드에 붙은 _isHanja 플래그를 우선 사용하고 없으면 기존 방식(현재 열린 암기장)으로 판단
+  if(currentCard && typeof currentCard._isHanja === 'boolean') return currentCard._isHanja;
   const dk = decks.find(d=>d.id===currentDeckId);
   return !!(dk && dk.name && dk.name.startsWith('한자'));
 }
@@ -1387,7 +1517,7 @@ function showQuizStage(){
   $('quiz-q').textContent = hanja ? '훈음에 맞는 한자를 고르세요' : '뜻에 맞는 단어를 고르세요';
   $('quiz-term').textContent = hanja ? extractReading(currentCard.meaning) : currentCard.meaning;
 
-  const pool = currentWords.filter(w=>w.id!==currentCard.id).map(w=>w.term);
+  const pool = distractorPool.filter(t=>t!==currentCard.term);
   const distractors = shuffle(pool).slice(0,3);
   const options = shuffle([currentCard.term, ...distractors]);
 
@@ -1501,11 +1631,12 @@ window.submitSpell = function(){
 
 async function updateCardSchedule(card, correct){
   try{
+    const targetDeckId = card._deckId || currentDeckId;
     const currentIntervalIdx = INTERVALS.indexOf(card.interval ? card.interval : 0);
     const baseIdx = currentIntervalIdx===-1 ? 0 : currentIntervalIdx;
     const { idx, days } = nextIntervalDays(baseIdx, correct);
     const nextReview = Date.now() + days*24*60*60*1000;
-    await updateDoc(doc(wordsCol(currentDeckId), card.id), {
+    await updateDoc(doc(wordsCol(targetDeckId), card.id), {
       interval: days,
       nextReview,
       wrongStreak: correct ? 0 : (card.wrongStreak||0)+1
@@ -1556,7 +1687,9 @@ async function finishMainCycle(){
   $('done-title').textContent = cheer.title;
   $('done-total').textContent = studyStats.total;
   $('done-correct').textContent = studyStats.correct;
-  $('done-sub').textContent = `${currentDeckId ? (decks.find(d=>d.id===currentDeckId)?.name||'') : ''} 학습을 마쳤어요`;
+  $('done-sub').textContent = isGlobalSession
+    ? '전체 오답 모음 학습을 마쳤어요'
+    : `${currentDeckId ? (decks.find(d=>d.id===currentDeckId)?.name||'') : ''} 학습을 마쳤어요`;
   spawnConfetti();
   playCheerSound();
 }
@@ -1564,7 +1697,8 @@ async function finishMainCycle(){
 function startReviewRound(){
   isReviewRound = true;
   const ids = Array.from(wrongIds);
-  const cards = ids.map(id=>currentWords.find(w=>w.id===id)).filter(Boolean);
+  const sourceQueue = studyQueue; // 재할당 전 원래 큐 (카드의 _isHanja/_deckId 정보 보존)
+  const cards = ids.map(id=>sourceQueue.find(w=>w.id===id)).filter(Boolean);
   if(cards.length===0){ finishMainCycle(); return; }
   studyQueue = cards.map(w=>({...w}));
   phaseOrder = ['spell']; // 복습 라운드는 스펠링 확인 한 단계만 진행
