@@ -1675,7 +1675,7 @@ function showQuizStage(reversed){
 
   if(!reversed){
     $('quiz-q').textContent = hanja ? '훈음에 맞는 한자를 고르세요' : '뜻에 맞는 단어를 고르세요';
-    $('quiz-term').textContent = hanja ? extractReading(currentCard.meaning) : currentCard.meaning;
+    $('quiz-term').textContent = hanja ? extractReading(currentCard.meaning) : getReadableMeaning(currentCard.meaning);
   } else {
     $('quiz-q').textContent = hanja ? '한자에 맞는 훈음을 고르세요' : '단어에 맞는 뜻을 고르세요';
     $('quiz-term').textContent = currentCard.term;
@@ -1726,7 +1726,7 @@ function showSpellStage(){
   $('stage-card').classList.add('hidden');
   $('stage-quiz').classList.add('hidden');
   $('stage-spell').classList.remove('hidden');
-  $('spell-meaning').textContent = isHanjaDeck() ? currentCard.term : currentCard.meaning;
+  $('spell-meaning').textContent = isHanjaDeck() ? currentCard.term : getReadableMeaning(currentCard.meaning);
   const input = $('spell-input');
   input.value = '';
   input.disabled = false;
