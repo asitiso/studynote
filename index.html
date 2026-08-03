@@ -235,6 +235,7 @@
     <div class="topbar" style="padding-left:0;padding-right:0;">
       <span class="title" id="deck-title"></span>
       <div style="display:flex;gap:4px;">
+        <button class="icon-btn" onclick="startListenMode(currentDeckId)">🎧</button>
         <button class="icon-btn" onclick="renameDeck()">✎</button>
         <button class="icon-btn" onclick="openDeleteDeck()">🗑</button>
       </div>
@@ -287,6 +288,30 @@
       <button id="spell-speak-btn" onclick="speakCurrentTerm(event)" class="hidden" style="display:block;margin:6px auto 0;background:transparent;color:var(--accent);font-size:14px;font-weight:600;">🔊 발음 듣기</button>
       <button class="spell-submit" id="spell-submit" onclick="submitSpell()">확인</button>
       <button id="spell-idk" onclick="giveUpSpell()" style="width:100%;height:48px;margin-top:10px;border-radius:14px;font-size:15px;font-weight:600;color:var(--sub);background:transparent;border:1.5px solid var(--line);">잘 모르겠어요</button>
+    </div>
+  </div>
+
+  <!-- ===== 3-1. 듣기 모드 (차에서 손 안 대고 듣기) ===== -->
+  <div id="screen-listen" class="screen hidden">
+    <div class="back-row">
+      <button class="back-btn" onclick="exitListen()">‹ 그만듣기</button>
+    </div>
+    <div class="study-top">
+      <span class="study-deck-name" id="listen-deck-name"></span>
+      <span class="study-count" id="listen-count"></span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="listen-progress-fill" style="width:0%"></div></div>
+    <div class="card-stage">
+      <div class="flash-card" id="listen-card" style="cursor:default;">
+        <div class="card-term" id="listen-term"></div>
+        <div class="card-meaning" id="listen-meaning"></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:16px;">
+        <button onclick="listenPrev()" style="flex:1;height:56px;border-radius:18px;background:var(--card);border:1px solid var(--line);font-size:20px;">⏮</button>
+        <button id="listen-play-btn" onclick="toggleListenPlay()" style="flex:2;height:56px;border-radius:18px;background:var(--accent);color:#fff;font-size:16px;font-weight:700;">⏸ 일시정지</button>
+        <button onclick="listenNext()" style="flex:1;height:56px;border-radius:18px;background:var(--card);border:1px solid var(--line);font-size:20px;">⏭</button>
+      </div>
+      <div style="text-align:center;font-size:13px;color:var(--sub);margin-top:14px;">화면을 꺼도 계속 재생돼요 (기기에 따라 다를 수 있어요)</div>
     </div>
   </div>
 
@@ -436,7 +461,7 @@ function $(id){ return document.getElementById(id); }
 function show(id){ $(id).classList.remove('hidden'); }
 function hide(id){ $(id).classList.add('hidden'); }
 function showScreen(id){
-  ['screen-home','screen-deck','screen-study','screen-done','screen-add','screen-newdeck'].forEach(s=>{
+  ['screen-home','screen-deck','screen-study','screen-listen','screen-done','screen-add','screen-newdeck'].forEach(s=>{
     if(s===id) $(s).classList.remove('hidden'); else $(s).classList.add('hidden');
   });
   removeAllFabs();
@@ -1406,6 +1431,122 @@ window.speakCurrentTerm = function(e){
   if(e) e.stopPropagation();
   if(!currentCard) return;
   speakText(currentCard.term);
+};
+
+// ================== 듣기 모드 (차에서 손 안 대고 듣기) ==================
+let listenQueue = [];
+let listenIdx = 0;
+let listenPlaying = false;
+let listenDeckId = null;
+
+function getReadableMeaning(meaning){
+  // "품사. 뜻 — 예문..." 또는 "훈음 (부수) — 설명" 형태에서 영어 예문 없이 한국어 뜻 부분만 추림
+  let m = (meaning||'').split(' — ')[0];
+  m = m.split(' 예:')[0];
+  return m.trim();
+}
+
+function speakQueued(text, lang, onDone){
+  try{
+    if(!('speechSynthesis' in window)){ onDone && onDone(); return; }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = lang;
+    utter.rate = 0.9;
+    utter.onend = ()=>{ onDone && onDone(); };
+    utter.onerror = ()=>{ onDone && onDone(); };
+    window.speechSynthesis.speak(utter);
+  }catch(err){ console.error(err); onDone && onDone(); }
+}
+
+window.startListenMode = function(deckId){
+  if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
+  listenDeckId = deckId;
+  listenQueue = currentWords.slice().reverse(); // 오래된 순서대로
+  listenIdx = 0;
+  listenPlaying = true;
+  const dk = decks.find(d=>d.id===deckId);
+  $('listen-deck-name').textContent = dk ? dk.name : '';
+  showScreen('screen-listen');
+  playListenCard();
+};
+
+function playListenCard(){
+  if(listenIdx >= listenQueue.length){
+    toast('전체 다 읽었어요');
+    exitListen();
+    return;
+  }
+  const card = listenQueue[listenIdx];
+  const hanja = deckIsHanja(listenDeckId);
+  const termText = hanja ? extractReading(card.meaning) : card.term;
+  const meaningText = hanja ? card.term : getReadableMeaning(card.meaning);
+  const termLang = /^[A-Za-z\s.,'’-]+$/.test((termText||'').trim()) ? 'en-US' : 'ko-KR';
+
+  $('listen-term').textContent = termText;
+  $('listen-meaning').textContent = meaningText;
+  $('listen-count').textContent = `${listenIdx+1} / ${listenQueue.length}`;
+  $('listen-progress-fill').style.width = Math.round(((listenIdx+1)/listenQueue.length)*100) + '%';
+
+  if(!listenPlaying) return;
+  speakQueued(termText, termLang, ()=>{
+    if(!listenPlaying) return;
+    setTimeout(()=>{
+      if(!listenPlaying) return;
+      speakQueued(meaningText, 'ko-KR', ()=>{
+        if(!listenPlaying) return;
+        setTimeout(()=>{
+          if(!listenPlaying) return;
+          listenIdx++;
+          playListenCard();
+        }, 500);
+      });
+    }, 250);
+  });
+}
+
+window.toggleListenPlay = function(){
+  const btn = $('listen-play-btn');
+  if(listenPlaying){
+    listenPlaying = false;
+    window.speechSynthesis.cancel();
+    btn.textContent = '▶ 재생';
+  } else {
+    listenPlaying = true;
+    btn.textContent = '⏸ 일시정지';
+    playListenCard(); // 현재 카드 처음부터 다시 읽음
+  }
+};
+
+window.listenNext = function(){
+  window.speechSynthesis.cancel();
+  listenIdx = Math.min(listenIdx+1, listenQueue.length-1);
+  if(listenPlaying) playListenCard();
+  else {
+    const card = listenQueue[listenIdx];
+    const hanja = deckIsHanja(listenDeckId);
+    $('listen-term').textContent = hanja ? extractReading(card.meaning) : card.term;
+    $('listen-meaning').textContent = hanja ? card.term : getReadableMeaning(card.meaning);
+    $('listen-count').textContent = `${listenIdx+1} / ${listenQueue.length}`;
+  }
+};
+
+window.listenPrev = function(){
+  window.speechSynthesis.cancel();
+  listenIdx = Math.max(listenIdx-1, 0);
+  if(listenPlaying) playListenCard();
+  else {
+    const card = listenQueue[listenIdx];
+    const hanja = deckIsHanja(listenDeckId);
+    $('listen-term').textContent = hanja ? extractReading(card.meaning) : card.term;
+    $('listen-meaning').textContent = hanja ? card.term : getReadableMeaning(card.meaning);
+    $('listen-count').textContent = `${listenIdx+1} / ${listenQueue.length}`;
+  }
+};
+
+window.exitListen = function(){
+  listenPlaying = false;
+  window.speechSynthesis.cancel();
+  openDeck(listenDeckId);
 };
 
 function speakText(text){
