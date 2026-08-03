@@ -1461,48 +1461,58 @@ function updateListenDisplay(i){
 // 콜백으로 하나씩 잇지 않고, 남은 단어 전체를 이 순간에 한꺼번에 재생목록으로 밀어넣음
 // (브라우저가 "사용자가 직접 누른 순간 이후의 비동기 재생"을 막는 경우가 많아, 이 방식으로 우회)
 function queueListenFrom(startIdx){
-  window.speechSynthesis.cancel();
-  if(!('speechSynthesis' in window)){ toast('이 기기에서는 음성 재생을 지원하지 않아요'); return; }
-  if(startIdx >= listenQueue.length){
-    toast('전체 다 읽었어요');
-    exitListen();
-    return;
-  }
-  const hanja = deckIsHanja(listenDeckId);
-  for(let i = startIdx; i < listenQueue.length; i++){
-    const card = listenQueue[i];
-    const termText = hanja ? extractReading(card.meaning) : card.term;
-    const meaningText = hanja ? card.term : getReadableMeaning(card.meaning);
-    const termLang = /^[A-Za-z\s.,'’-]+$/.test((termText||'').trim()) ? 'en-US' : 'ko-KR';
-
-    const uTerm = new SpeechSynthesisUtterance(termText);
-    uTerm.lang = termLang;
-    uTerm.rate = 0.9;
-    uTerm.onstart = (idx=>()=>{ listenIdx = idx; updateListenDisplay(idx); })(i);
-    window.speechSynthesis.speak(uTerm);
-
-    const uMeaning = new SpeechSynthesisUtterance(meaningText);
-    uMeaning.lang = 'ko-KR';
-    uMeaning.rate = 0.9;
-    if(i === listenQueue.length - 1){
-      uMeaning.onend = ()=>{ if(listenPlaying){ toast('전체 다 읽었어요'); exitListen(); } };
+  try{
+    if(!('speechSynthesis' in window)){ toast('이 기기에서는 음성 재생을 지원하지 않아요'); return; }
+    window.speechSynthesis.cancel();
+    if(startIdx >= listenQueue.length){
+      toast('전체 다 읽었어요');
+      exitListen();
+      return;
     }
-    window.speechSynthesis.speak(uMeaning);
+    const hanja = deckIsHanja(listenDeckId);
+    for(let i = startIdx; i < listenQueue.length; i++){
+      const card = listenQueue[i];
+      const termText = hanja ? extractReading(card.meaning) : card.term;
+      const meaningText = hanja ? card.term : getReadableMeaning(card.meaning);
+      const termLang = /^[A-Za-z\s.,'’-]+$/.test((termText||'').trim()) ? 'en-US' : 'ko-KR';
+
+      const uTerm = new SpeechSynthesisUtterance(termText);
+      uTerm.lang = termLang;
+      uTerm.rate = 0.9;
+      uTerm.onstart = (idx=>()=>{ listenIdx = idx; updateListenDisplay(idx); })(i);
+      window.speechSynthesis.speak(uTerm);
+
+      const uMeaning = new SpeechSynthesisUtterance(meaningText);
+      uMeaning.lang = 'ko-KR';
+      uMeaning.rate = 0.9;
+      if(i === listenQueue.length - 1){
+        uMeaning.onend = ()=>{ if(listenPlaying){ toast('전체 다 읽었어요'); exitListen(); } };
+      }
+      window.speechSynthesis.speak(uMeaning);
+    }
+  }catch(e){
+    console.error('듣기 재생 실패', e);
+    toast('재생 오류: ' + e.message);
   }
 }
 
 window.startListenMode = function(deckId){
-  if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
-  listenDeckId = deckId;
-  listenQueue = currentWords.slice().reverse(); // 오래된 순서대로
-  listenIdx = 0;
-  listenPlaying = true;
-  const dk = decks.find(d=>d.id===deckId);
-  $('listen-deck-name').textContent = dk ? dk.name : '';
-  $('listen-play-btn').textContent = '⏸ 일시정지';
-  showScreen('screen-listen');
-  updateListenDisplay(0);
-  queueListenFrom(0);
+  try{
+    if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
+    listenDeckId = deckId;
+    listenQueue = currentWords.slice().reverse(); // 오래된 순서대로
+    listenIdx = 0;
+    listenPlaying = true;
+    const dk = decks.find(d=>d.id===deckId);
+    $('listen-deck-name').textContent = dk ? dk.name : '';
+    $('listen-play-btn').textContent = '⏸ 일시정지';
+    showScreen('screen-listen');
+    updateListenDisplay(0);
+    queueListenFrom(0);
+  }catch(e){
+    console.error('듣기 모드 시작 실패', e);
+    toast('듣기 모드 오류: ' + e.message);
+  }
 };
 
 window.toggleListenPlay = function(){
