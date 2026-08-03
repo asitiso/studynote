@@ -870,24 +870,34 @@ function renderDeckSessionInfo(){
   </div>`;
 }
 
+function isToday(ts){
+  if(!ts) return false;
+  const d = new Date(ts);
+  const now = new Date();
+  return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth() && d.getDate()===now.getDate();
+}
+
 function renderDeckStats(){
   const el = $('deck-stats');
   if(currentWords.length===0){ el.innerHTML=''; return; }
   const now = Date.now();
-  const due = currentWords.filter(w=> !w.nextReview || w.nextReview <= now).length;
+  const dueTotal = currentWords.filter(w=> !w.nextReview || w.nextReview <= now).length;
+  const due = Math.min(dueTotal, DAILY_LIMIT); // 실제 "학습 시작"은 하루 최대 20개까지만 다루므로 통계도 맞춤
+  const doneToday = currentWords.filter(w=> isToday(w.lastReviewed)).length;
   const mastered = currentWords.filter(w=> (w.interval||0) >= 35).length;
   const struggling = currentWords.filter(w=> (w.wrongStreak||0) >= 2);
 
   const chip = (label, num, color, soft, onclick)=>`
-    <div ${onclick ? `onclick="${onclick}"` : ''} style="flex:1;min-width:70px;background:${soft};border-radius:14px;padding:10px 8px;text-align:center;${onclick?'cursor:pointer;':''}">
-      <div style="font-size:18px;font-weight:800;color:${color};">${num}</div>
-      <div style="font-size:11px;color:${color};font-weight:600;">${label}</div>
+    <div ${onclick ? `onclick="${onclick}"` : ''} style="flex:1;min-width:64px;background:${soft};border-radius:14px;padding:10px 6px;text-align:center;${onclick?'cursor:pointer;':''}">
+      <div style="font-size:17px;font-weight:800;color:${color};">${num}</div>
+      <div style="font-size:10.5px;color:${color};font-weight:600;white-space:nowrap;">${label}</div>
     </div>`;
 
   el.innerHTML =
     chip('전체', currentWords.length, 'var(--ink)', 'var(--card)') +
-    chip('오늘 복습', due, 'var(--accent)', 'var(--accent-soft)') +
-    chip('완전암기', mastered, 'var(--good)', 'var(--good-soft)') +
+    chip('오늘 학습', doneToday, 'var(--good)', 'var(--good-soft)') +
+    chip('오늘 복습예정', due, 'var(--accent)', 'var(--accent-soft)') +
+    chip('완전암기', mastered, 'var(--sub)', 'var(--card)') +
     (struggling.length>0
       ? chip('자주틀림 →', struggling.length, 'var(--warn)', 'var(--warn-soft)', `startWrongNoteStudy('${currentDeckId}')`)
       : chip('자주틀림', 0, 'var(--sub)', 'var(--card)'));
@@ -1639,7 +1649,8 @@ async function updateCardSchedule(card, correct){
     await updateDoc(doc(wordsCol(targetDeckId), card.id), {
       interval: days,
       nextReview,
-      wrongStreak: correct ? 0 : (card.wrongStreak||0)+1
+      wrongStreak: correct ? 0 : (card.wrongStreak||0)+1,
+      lastReviewed: Date.now()
     });
   }catch(e){ console.error(e); }
 }
