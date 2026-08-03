@@ -436,7 +436,7 @@ let geminiIdx = 0;
 let decks = [];              // 암기장 목록
 let deckWordsCache = {};     // 홈 로드 시 캐시된 암기장별 단어 목록 (오답모음용)
 let globalWrongCount = 0;    // 전체 암기장 통틀어 자주 틀리는 단어 수
-let distractorPool = [];     // 4지선다 오답 보기용 단어 풀
+let distractorPool = [];     // 4지선다 오답 보기용 카드 풀 (단어+뜻 둘 다 필요해서 카드 객체로 보관)
 let isGlobalSession = false; // 지금이 "오답 모음"(여러 암기장 통합) 학습 세션인지
 let currentDeckId = null;    // 현재 열람 중인 암기장
 let currentWords = [];       // 현재 암기장의 단어들
@@ -445,7 +445,7 @@ let addTargetDeckId = null;  // 단어를 추가할 대상 암기장
 
 // 학습 세션 상태
 let studyQueue = [];      // 이번 회차에서 학습할 고정 카드 목록 (단계가 바뀌어도 안 바뀜)
-let phaseOrder = ['flip','quiz','spell']; // 진행할 단계 순서
+let phaseOrder = ['flip','quiz','quizRev','spell']; // 진행할 단계 순서
 let phaseIndex = 0;       // 현재 진행 중인 단계 인덱스
 let phaseQueue = [];      // 현재 단계에서 사용할 셔플된 카드 순서
 let studyIdx = 0;
@@ -1230,13 +1230,13 @@ window.startGlobalWrongNoteStudy = function(){
   isReviewRound = false;
   wrongIds = new Set();
   studyQueue = collected;
-  phaseOrder = ['flip','quiz','spell'];
+  phaseOrder = ['flip','quiz','quizRev','spell'];
   phaseIndex = 0;
   phaseQueue = shuffle(studyQueue.map(w=>({...w})));
   studyIdx = 0;
   studyStats = { total: 0, correct: 0 };
   // 4지선다 오답 보기는 전체 암기장 단어를 통틀어 뽑음
-  distractorPool = Object.values(deckWordsCache).flat().map(w=>w.term);
+  distractorPool = Object.values(deckWordsCache).flat();
 
   $('study-deck-name').textContent = '전체 오답 모음';
   showScreen('screen-study');
@@ -1254,14 +1254,14 @@ window.startWrongNoteStudy = function(deckId){
   isReviewRound = false;
   wrongIds = new Set();
   studyQueue = wrongWords.map(w=>({...w}));
-  phaseOrder = ['flip','quiz','spell'];
+  phaseOrder = ['flip','quiz','quizRev','spell'];
   phaseIndex = 0;
   phaseQueue = shuffle(studyQueue.map(w=>({...w})));
   studyIdx = 0;
   studyStats = { total: 0, correct: 0 };
   studyQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
   phaseQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
-  distractorPool = currentWords.map(w=>w.term);
+  distractorPool = currentWords.slice();
 
   const dk = decks.find(d=>d.id===deckId);
   $('study-deck-name').textContent = (dk ? dk.name : '') + ' · 오답노트';
@@ -1317,7 +1317,7 @@ window.startStudy = async function(deckId){
       return;
     }
     studyQueue = queue.map(w=>({...w}));
-    phaseOrder = ['flip','quiz','spell'];
+    phaseOrder = ['flip','quiz','quizRev','spell'];
     phaseIndex = 0;
     phaseQueue = shuffle(studyQueue.map(w=>({...w})));
     studyIdx = 0;
@@ -1327,7 +1327,7 @@ window.startStudy = async function(deckId){
   // 카드마다 출처(한자 여부/암기장 id) 태깅 - 오답모음처럼 여러 암기장이 섞이는 세션 대비
   studyQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
   phaseQueue.forEach(w=>{ w._isHanja = hanja; w._deckId = deckId; });
-  distractorPool = currentWords.map(w=>w.term);
+  distractorPool = currentWords.slice();
 
   $('study-deck-name').textContent = dk ? dk.name : '';
   showScreen('screen-study');
@@ -1590,9 +1590,10 @@ function shuffle(arr){
 }
 
 const PHASE_LABELS = {
-  flip: '1/3 단계 · 카드 익히기',
-  quiz: '2/3 단계 · 뜻 보고 단어 고르기',
-  spell: '3/3 단계 · 뜻 보고 단어 쓰기'
+  flip: '카드 익히기',
+  quiz: '뜻 보고 단어 고르기',
+  quizRev: '단어 보고 뜻 고르기',
+  spell: '뜻 보고 단어 쓰기'
 };
 
 function updateProgress(){
@@ -1600,7 +1601,9 @@ function updateProgress(){
   $('progress-fill').style.width = pct+'%';
   $('study-count').textContent = `${studyIdx} / ${phaseQueue.length}`;
   const phase = phaseOrder[phaseIndex];
-  $('phase-label').textContent = phaseOrder.length>1 ? (PHASE_LABELS[phase]||'') : '오답 다시 확인';
+  $('phase-label').textContent = phaseOrder.length>1
+    ? `${phaseIndex+1}/${phaseOrder.length} 단계 · ${PHASE_LABELS[phase]||''}`
+    : '오답 다시 확인';
 }
 
 function showCard(){
@@ -1612,7 +1615,8 @@ function showCard(){
   updateProgress();
   const phase = phaseOrder[phaseIndex];
   if(phase === 'flip') showFlipStage();
-  else if(phase === 'quiz') showQuizStage();
+  else if(phase === 'quiz') showQuizStage(false);
+  else if(phase === 'quizRev') showQuizStage(true);
   else if(phase === 'spell') showSpellStage();
 }
 
@@ -1659,36 +1663,46 @@ window.answerCard = function(known){
   showCard();
 };
 
-function showQuizStage(){
+function showQuizStage(reversed){
   $('stage-card').classList.add('hidden');
   $('stage-quiz').classList.remove('hidden');
   $('stage-spell').classList.add('hidden');
 
   const hanja = isHanjaDeck();
-  $('quiz-q').textContent = hanja ? '훈음에 맞는 한자를 고르세요' : '뜻에 맞는 단어를 고르세요';
-  $('quiz-term').textContent = hanja ? extractReading(currentCard.meaning) : currentCard.meaning;
+  const optionTextOf = (w)=> reversed
+    ? (hanja ? extractReading(w.meaning) : getReadableMeaning(w.meaning))
+    : w.term;
 
-  const pool = distractorPool.filter(t=>t!==currentCard.term);
-  const distractors = shuffle(pool).slice(0,3);
-  const options = shuffle([currentCard.term, ...distractors]);
+  if(!reversed){
+    $('quiz-q').textContent = hanja ? '훈음에 맞는 한자를 고르세요' : '뜻에 맞는 단어를 고르세요';
+    $('quiz-term').textContent = hanja ? extractReading(currentCard.meaning) : currentCard.meaning;
+  } else {
+    $('quiz-q').textContent = hanja ? '한자에 맞는 훈음을 고르세요' : '단어에 맞는 뜻을 고르세요';
+    $('quiz-term').textContent = currentCard.term;
+  }
+
+  const poolCards = distractorPool.filter(w=>w.id!==currentCard.id);
+  const distractorCards = shuffle(poolCards).slice(0,3);
+  const allCards = shuffle([currentCard, ...distractorCards]);
+  const optionTexts = allCards.map(optionTextOf);
 
   const wrap = $('quiz-options');
   wrap.innerHTML = '';
-  const isShort = options.every(o=>o.length<=2); // 한자처럼 짧은 보기는 2x2 큰 글씨로
+  const isShort = optionTexts.every(o=>o.length<=2); // 한자처럼 짧은 보기는 2x2 큰 글씨로
   wrap.className = 'quiz-options' + (isShort ? ' grid-2x2' : '');
-  options.forEach(opt=>{
+  allCards.forEach((w,i)=>{
     const btn = document.createElement('button');
     btn.className = 'quiz-opt' + (isShort ? ' big-char' : '');
-    btn.textContent = opt;
-    btn.onclick = ()=>selectQuizOption(btn, opt);
+    btn.textContent = optionTexts[i];
+    const isCorrect = w.id === currentCard.id;
+    btn.onclick = ()=>selectQuizOption(btn, isCorrect, allCards);
     wrap.appendChild(btn);
   });
 }
 
-function selectQuizOption(btn, opt){
+function selectQuizOption(btn, isCorrect, allCards){
   const buttons = Array.from($('quiz-options').children);
   buttons.forEach(b=>b.disabled = true);
-  const isCorrect = opt === currentCard.term;
   studyStats.total++;
   if(isCorrect){
     btn.classList.add('correct', 'pop-correct');
@@ -1697,7 +1711,8 @@ function selectQuizOption(btn, opt){
   } else {
     btn.classList.add('wrong', 'shake-wrong');
     wrongIds.add(currentCard.id);
-    buttons.find(b=>b.textContent===currentCard.term)?.classList.add('correct', 'pop-correct');
+    const correctIdx = allCards.findIndex(w=>w.id===currentCard.id);
+    if(correctIdx>=0) buttons[correctIdx].classList.add('correct', 'pop-correct');
     playWrongSound();
   }
   setTimeout(()=>{
