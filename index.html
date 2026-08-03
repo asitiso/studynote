@@ -214,6 +214,9 @@
 </head>
 <body>
 <div id="app">
+  <div id="debug-log" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#111;color:#0f0;
+    font-family:monospace;font-size:11px;padding:6px 10px;white-space:pre-wrap;word-break:break-all;
+    max-height:120px;overflow-y:auto;">디버그 로그 대기중...</div>
 
   <!-- ===== 1. 홈: 암기장 목록 ===== -->
   <div id="screen-home" class="screen">
@@ -221,7 +224,7 @@
       <span class="title">모든암기장</span>
     </div>
     <div style="background:#ff3b30;color:#fff;font-weight:800;text-align:center;padding:10px;border-radius:12px;margin-bottom:12px;font-size:14px;">
-      🔧 빌드 버전: 2026-08-04-LISTEN-DEBUG-2
+      🔧 빌드 버전: 2026-08-04-LISTEN-DEBUG-3 (addEventListener)
     </div>
     <input type="text" id="deck-search" placeholder="🔍 암기장 검색" oninput="onDeckSearchInput()"
       style="width:100%;border:1.5px solid var(--line);border-radius:14px;padding:12px 16px;font-size:15px;
@@ -238,7 +241,7 @@
     <div class="topbar" style="padding-left:0;padding-right:0;">
       <span class="title" id="deck-title"></span>
       <div style="display:flex;gap:4px;">
-        <button class="icon-btn" onclick="startListenMode(currentDeckId)">🎧</button>
+        <button class="icon-btn" id="listen-entry-btn">🎧</button>
         <button class="icon-btn" onclick="renameDeck()">✎</button>
         <button class="icon-btn" onclick="openDeleteDeck()">🗑</button>
       </div>
@@ -1499,8 +1502,15 @@ function queueListenFrom(startIdx){
   }
 }
 
+function dlog(msg){
+  const el = document.getElementById('debug-log');
+  if(!el) return;
+  const time = new Date().toLocaleTimeString();
+  el.textContent = `[${time}] ${msg}\n` + el.textContent;
+}
+
 window.startListenMode = function(deckId){
-  alert('디버그: startListenMode 호출됨, deckId=' + deckId + ', currentWords=' + currentWords.length);
+  dlog('startListenMode 호출됨, deckId=' + deckId + ', currentWords=' + currentWords.length);
   try{
     if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
     listenDeckId = deckId;
@@ -1513,11 +1523,31 @@ window.startListenMode = function(deckId){
     showScreen('screen-listen');
     updateListenDisplay(0);
     queueListenFrom(0);
+    dlog('showScreen(screen-listen) 완료');
   }catch(e){
     console.error('듣기 모드 시작 실패', e);
+    dlog('오류: ' + e.message);
     toast('듣기 모드 오류: ' + e.message);
   }
 };
+
+// 매번 deck 화면을 그릴 때 버튼이 다시 생기므로, 그때마다 이벤트를 다시 연결
+function bindListenButton(){
+  const btn = document.getElementById('listen-entry-btn');
+  if(!btn) { dlog('listen-entry-btn 요소를 못 찾음'); return; }
+  btn.replaceWith(btn.cloneNode(true)); // 혹시 중복 바인딩된 리스너 있으면 제거
+  const freshBtn = document.getElementById('listen-entry-btn');
+  freshBtn.addEventListener('click', function(e){
+    dlog('🎧 버튼 클릭 이벤트 발생함');
+    e.preventDefault();
+    e.stopPropagation();
+    startListenMode(currentDeckId);
+  });
+  dlog('listen-entry-btn 이벤트 연결 완료');
+}
+document.addEventListener('DOMContentLoaded', bindListenButton);
+// 모듈 스크립트는 DOMContentLoaded보다 늦게 실행될 수 있어, 지금 시점에도 한 번 더 시도
+setTimeout(bindListenButton, 0);
 
 window.toggleListenPlay = function(){
   const btn = $('listen-play-btn');
