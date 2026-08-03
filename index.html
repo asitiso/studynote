@@ -1497,6 +1497,7 @@ function queueListenFrom(startIdx){
 }
 
 window.startListenMode = function(deckId){
+  alert('디버그: startListenMode 호출됨, deckId=' + deckId + ', currentWords=' + currentWords.length);
   try{
     if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
     listenDeckId = deckId;
