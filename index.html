@@ -214,17 +214,11 @@
 </head>
 <body>
 <div id="app">
-  <div id="debug-log" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#111;color:#0f0;
-    font-family:monospace;font-size:11px;padding:6px 10px;white-space:pre-wrap;word-break:break-all;
-    max-height:120px;overflow-y:auto;">디버그 로그 대기중...</div>
 
   <!-- ===== 1. 홈: 암기장 목록 ===== -->
   <div id="screen-home" class="screen">
     <div class="topbar">
       <span class="title">모든암기장</span>
-    </div>
-    <div style="background:#ff3b30;color:#fff;font-weight:800;text-align:center;padding:10px;border-radius:12px;margin-bottom:12px;font-size:14px;">
-      🔧 빌드 버전: 2026-08-04-LISTEN-DEBUG-3 (addEventListener)
     </div>
     <input type="text" id="deck-search" placeholder="🔍 암기장 검색" oninput="onDeckSearchInput()"
       style="width:100%;border:1.5px solid var(--line);border-radius:14px;padding:12px 16px;font-size:15px;
@@ -460,7 +454,10 @@ let currentCard = null;
 let wrongIds = new Set(); // 이번 메인 회차에서 한 번이라도 틀린 카드 id 모음
 let isReviewRound = false;    // 지금이 오답 복습 라운드인지
 
-const DAILY_LIMIT = 20; // 하루 학습 개수 캡
+function getDailyLimit(totalWords){
+  // 단어장이 작으면 20개, 크면 최대 50개까지 늘어남 (전체의 1/4, 20~50 사이로 제한)
+  return Math.min(50, Math.max(20, Math.round(totalWords / 4)));
+}
 
 // ================== 유틸 ==================
 function $(id){ return document.getElementById(id); }
@@ -913,7 +910,7 @@ function renderDeckStats(){
   if(currentWords.length===0){ el.innerHTML=''; return; }
   const now = Date.now();
   const dueTotal = currentWords.filter(w=> !w.nextReview || w.nextReview <= now).length;
-  const due = Math.min(dueTotal, DAILY_LIMIT); // 실제 "학습 시작"은 하루 최대 20개까지만 다루므로 통계도 맞춤
+  const due = Math.min(dueTotal, getDailyLimit(currentWords.length)); // "학습 시작"의 하루 상한(20~50)에 맞춤
   const doneToday = currentWords.filter(w=> isToday(w.lastReviewed)).length;
   const mastered = currentWords.filter(w=> (w.interval||0) >= 35).length;
   const struggling = currentWords.filter(w=> (w.wrongStreak||0) >= 2);
@@ -1311,12 +1308,13 @@ window.startStudy = async function(deckId){
   if(!useResume){
     if(session) await clearSession();
     const now = Date.now();
+    const dailyLimit = getDailyLimit(currentWords.length);
     // 복습 대상 우선, 부족하면 새 단어로 채움
     const due = currentWords.filter(w=> !w.nextReview || w.nextReview <= now);
     const notDue = currentWords.filter(w=> w.nextReview && w.nextReview > now);
-    let queue = due.slice(0, DAILY_LIMIT);
-    if(queue.length < DAILY_LIMIT){
-      queue = queue.concat(notDue.slice(0, DAILY_LIMIT - queue.length));
+    let queue = due.slice(0, dailyLimit);
+    if(queue.length < dailyLimit){
+      queue = queue.concat(notDue.slice(0, dailyLimit - queue.length));
     }
     if(queue.length===0){
       toast('학습할 단어가 없어요');
@@ -1452,12 +1450,19 @@ function getReadableMeaning(meaning){
   return m.trim();
 }
 
+function getListenMeaning(meaning){
+  // 듣기 모드에서는 "동사./명사./형용사." 같은 품사 표시까지 빼고 뜻만 읽음
+  let m = getReadableMeaning(meaning);
+  m = m.replace(/^[가-힣]+\.\s*/, '');
+  return m.trim();
+}
+
 function updateListenDisplay(i){
   const card = listenQueue[i];
   if(!card) return;
   const hanja = deckIsHanja(listenDeckId);
   const termText = hanja ? extractReading(card.meaning) : card.term;
-  const meaningText = hanja ? card.term : getReadableMeaning(card.meaning);
+  const meaningText = hanja ? card.term : getListenMeaning(card.meaning);
   $('listen-term').textContent = termText;
   $('listen-meaning').textContent = meaningText;
   $('listen-count').textContent = `${i+1} / ${listenQueue.length}`;
@@ -1479,22 +1484,27 @@ function queueListenFrom(startIdx){
     for(let i = startIdx; i < listenQueue.length; i++){
       const card = listenQueue[i];
       const termText = hanja ? extractReading(card.meaning) : card.term;
-      const meaningText = hanja ? card.term : getReadableMeaning(card.meaning);
+      const meaningText = hanja ? card.term : getListenMeaning(card.meaning);
       const termLang = /^[A-Za-z\s.,'’-]+$/.test((termText||'').trim()) ? 'en-US' : 'ko-KR';
 
-      const uTerm = new SpeechSynthesisUtterance(termText);
-      uTerm.lang = termLang;
-      uTerm.rate = 0.9;
-      uTerm.onstart = (idx=>()=>{ listenIdx = idx; updateListenDisplay(idx); })(i);
-      window.speechSynthesis.speak(uTerm);
+      // 단어→뜻→단어→뜻 순서로 한 세트를 두 번 반복
+      for(let rep = 0; rep < 2; rep++){
+        const uTerm = new SpeechSynthesisUtterance(termText);
+        uTerm.lang = termLang;
+        uTerm.rate = 0.9;
+        if(rep === 0){
+          uTerm.onstart = (idx=>()=>{ listenIdx = idx; updateListenDisplay(idx); })(i);
+        }
+        window.speechSynthesis.speak(uTerm);
 
-      const uMeaning = new SpeechSynthesisUtterance(meaningText);
-      uMeaning.lang = 'ko-KR';
-      uMeaning.rate = 0.9;
-      if(i === listenQueue.length - 1){
-        uMeaning.onend = ()=>{ if(listenPlaying){ toast('전체 다 읽었어요'); exitListen(); } };
+        const uMeaning = new SpeechSynthesisUtterance(meaningText);
+        uMeaning.lang = 'ko-KR';
+        uMeaning.rate = 0.9;
+        if(i === listenQueue.length - 1 && rep === 1){
+          uMeaning.onend = ()=>{ if(listenPlaying){ toast('전체 다 읽었어요'); exitListen(); } };
+        }
+        window.speechSynthesis.speak(uMeaning);
       }
-      window.speechSynthesis.speak(uMeaning);
     }
   }catch(e){
     console.error('듣기 재생 실패', e);
@@ -1502,19 +1512,11 @@ function queueListenFrom(startIdx){
   }
 }
 
-function dlog(msg){
-  const el = document.getElementById('debug-log');
-  if(!el) return;
-  const time = new Date().toLocaleTimeString();
-  el.textContent = `[${time}] ${msg}\n` + el.textContent;
-}
-
 window.startListenMode = function(deckId){
-  dlog('startListenMode 호출됨, deckId=' + deckId + ', currentWords=' + currentWords.length);
   try{
     if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
     listenDeckId = deckId;
-    listenQueue = currentWords.slice().reverse(); // 오래된 순서대로
+    listenQueue = shuffle(currentWords.slice()); // 랜덤 순서
     listenIdx = 0;
     listenPlaying = true;
     const dk = decks.find(d=>d.id===deckId);
@@ -1523,27 +1525,22 @@ window.startListenMode = function(deckId){
     showScreen('screen-listen');
     updateListenDisplay(0);
     queueListenFrom(0);
-    dlog('showScreen(screen-listen) 완료');
   }catch(e){
     console.error('듣기 모드 시작 실패', e);
-    dlog('오류: ' + e.message);
     toast('듣기 모드 오류: ' + e.message);
   }
 };
 
-// 매번 deck 화면을 그릴 때 버튼이 다시 생기므로, 그때마다 이벤트를 다시 연결
 function bindListenButton(){
   const btn = document.getElementById('listen-entry-btn');
-  if(!btn) { dlog('listen-entry-btn 요소를 못 찾음'); return; }
+  if(!btn) return;
   btn.replaceWith(btn.cloneNode(true)); // 혹시 중복 바인딩된 리스너 있으면 제거
   const freshBtn = document.getElementById('listen-entry-btn');
   freshBtn.addEventListener('click', function(e){
-    dlog('🎧 버튼 클릭 이벤트 발생함');
     e.preventDefault();
     e.stopPropagation();
     startListenMode(currentDeckId);
   });
-  dlog('listen-entry-btn 이벤트 연결 완료');
 }
 document.addEventListener('DOMContentLoaded', bindListenButton);
 // 모듈 스크립트는 DOMContentLoaded보다 늦게 실행될 수 있어, 지금 시점에도 한 번 더 시도
