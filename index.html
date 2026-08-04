@@ -1512,29 +1512,6 @@ function queueListenFrom(startIdx){
   }
 }
 
-let wakeLock = null;
-
-async function acquireWakeLock(){
-  try{
-    if('wakeLock' in navigator){
-      wakeLock = await navigator.wakeLock.request('screen');
-    }
-  }catch(e){
-    console.warn('화면 꺼짐 방지 실패(무시 가능)', e);
-  }
-}
-async function releaseWakeLock(){
-  try{
-    if(wakeLock){ await wakeLock.release(); wakeLock = null; }
-  }catch(e){}
-}
-// 잠깐 다른 앱 갔다 오는 등으로 잠금이 풀리면, 듣기 화면으로 돌아왔을 때 다시 걸어줌
-document.addEventListener('visibilitychange', ()=>{
-  if(document.visibilityState === 'visible' && listenPlaying && !$('screen-listen').classList.contains('hidden')){
-    acquireWakeLock();
-  }
-});
-
 window.startListenMode = function(deckId){
   try{
     if(!deckId || currentWords.length===0){ toast('읽어줄 단어가 없어요'); return; }
@@ -1548,7 +1525,6 @@ window.startListenMode = function(deckId){
     showScreen('screen-listen');
     updateListenDisplay(0);
     queueListenFrom(0);
-    acquireWakeLock();
   }catch(e){
     console.error('듣기 모드 시작 실패', e);
     toast('듣기 모드 오류: ' + e.message);
@@ -1576,12 +1552,10 @@ window.toggleListenPlay = function(){
     listenPlaying = false;
     window.speechSynthesis.cancel();
     btn.textContent = '▶ 재생';
-    releaseWakeLock();
   } else {
     listenPlaying = true;
     btn.textContent = '⏸ 일시정지';
     queueListenFrom(listenIdx); // 멈췄던 단어부터 다시 재생목록에 밀어넣음
-    acquireWakeLock();
   }
 };
 
@@ -1602,7 +1576,6 @@ window.listenPrev = function(){
 window.exitListen = function(){
   listenPlaying = false;
   window.speechSynthesis.cancel();
-  releaseWakeLock();
   openDeck(listenDeckId);
 };
 
