@@ -401,7 +401,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, collection, doc, setDoc, getDocs, addDoc, deleteDoc, updateDoc,
-  query, orderBy, writeBatch, serverTimestamp, onSnapshot
+  query, orderBy, writeBatch, serverTimestamp, onSnapshot, increment
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -1741,6 +1741,7 @@ function selectQuizOption(btn, isCorrect, allCards){
   } else {
     btn.classList.add('wrong', 'shake-wrong');
     wrongIds.add(currentCard.id);
+    markWrongImmediately(currentCard.id, currentCard._deckId || currentDeckId);
     const correctIdx = allCards.findIndex(w=>w.id===currentCard.id);
     if(correctIdx>=0) buttons[correctIdx].classList.add('correct', 'pop-correct');
     playWrongSound();
@@ -1779,6 +1780,7 @@ window.giveUpSpell = function(){
   input.disabled = true;
   input.className = 'spell-input wrong shake-wrong';
   wrongIds.add(currentCard.id);
+  markWrongImmediately(currentCard.id, currentCard._deckId || currentDeckId);
   studyStats.total++;
   playWrongSound();
   $('spell-answer').textContent = `정답: ${isHanjaDeck() ? extractReading(currentCard.meaning) : currentCard.term}`;
@@ -1811,6 +1813,7 @@ window.submitSpell = function(){
   } else {
     input.className = 'spell-input wrong shake-wrong';
     wrongIds.add(currentCard.id);
+    markWrongImmediately(currentCard.id, currentCard._deckId || currentDeckId);
     playWrongSound();
     $('spell-answer').textContent = `정답: ${hanja ? extractReading(currentCard.meaning) : currentCard.term}`;
   }
@@ -1825,6 +1828,13 @@ window.submitSpell = function(){
   };
 };
 
+// 틀린 그 순간 즉시 +1 (세션이 끝나야만 반영되던 방식 대신, 실수하는 즉시 정확히 반영)
+async function markWrongImmediately(cardId, deckId){
+  try{
+    await updateDoc(doc(wordsCol(deckId), cardId), { wrongStreak: increment(1) });
+  }catch(e){ console.error('오답 카운트 반영 실패', e); }
+}
+
 async function updateCardSchedule(card, correct){
   try{
     const targetDeckId = card._deckId || currentDeckId;
@@ -1832,12 +1842,10 @@ async function updateCardSchedule(card, correct){
     const baseIdx = currentIntervalIdx===-1 ? 0 : currentIntervalIdx;
     const { idx, days } = nextIntervalDays(baseIdx, correct);
     const nextReview = Date.now() + days*24*60*60*1000;
-    await updateDoc(doc(wordsCol(targetDeckId), card.id), {
-      interval: days,
-      nextReview,
-      wrongStreak: correct ? 0 : (card.wrongStreak||0)+1,
-      lastReviewed: Date.now()
-    });
+    const update = { interval: days, nextReview, lastReviewed: Date.now() };
+    // 이번 판에서 한 번도 안 틀리고 맞혔을 때만 리셋. 틀렸으면 이미 즉시 반영된 값을 그대로 둠(여기서 다시 안 더함)
+    if(correct) update.wrongStreak = 0;
+    await updateDoc(doc(wordsCol(targetDeckId), card.id), update);
   }catch(e){ console.error(e); }
 }
 
